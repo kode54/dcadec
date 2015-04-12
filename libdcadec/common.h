@@ -24,6 +24,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#ifdef _MSC_VER
+#define _USE_MATH_DEFINES
+#endif
 #include <math.h>
 #include <errno.h>
 #include <assert.h>
@@ -64,9 +67,70 @@
 #define dca_clz32(x)    __builtin_clz(x)
 #define dca_clz64(x)    __builtin_clzll(x)
 #define dca_popcount(x) __builtin_popcount(x)
+#elif defined(_MSC_VER)
+#include <intrin.h>
+#define dca_bswap16(x)  _byteswap_ushort(x)
+#define dca_bswap32(x)  _byteswap_ulong(x)
+#define dca_bswap64(x)  _byteswap_uint64(x)
+static unsigned char __inline dca_clz32(uint32_t value)
+{
+	unsigned long leading_zero = 0;
+
+	if (value)
+	{
+		_BitScanReverse(&leading_zero, value);
+		return (unsigned char)(31 - leading_zero);
+	}
+	else
+	{
+		return 32;
+	}
+}
+static unsigned char __inline dca_clz64(uint64_t value)
+{
+	unsigned long leading_zero = 0;
+
+	union
+	{
+		struct
+		{
+			uint32_t low, high;
+		} dw;
+		uint64_t lw;
+	} a;
+
+	a.lw = value;
+
+	if (a.dw.high)
+	{
+		_BitScanReverse(&leading_zero, a.dw.high);
+		return (unsigned char)(31 - leading_zero);
+	}
+	else
+	{
+		if (a.dw.low)
+		{
+			_BitScanReverse(&leading_zero, a.dw.low);
+			return (unsigned char)(63 - leading_zero);
+		}
+		else
+		{
+			return 64;
+		}
+	}
+}
+#define dca_popcount(x) __popcnt(x)
+#define inline __inline
+#define restrict __restrict
 #else
 #error Unsupported compiler
 #endif
+
+#define dca_bswap32_const(x) \
+	(((uint32_t)(x) >> 24) | \
+	(((uint32_t)(x) >> 8) & 0xFF00) | \
+	(((uint32_t)(x) << 8) & 0xFF0000) | \
+	(((uint32_t)(x) << 24) & 0xFF000000))
 
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define DCA_16LE(x) ((uint16_t)(x))
@@ -74,6 +138,7 @@
 #define DCA_64LE(x) ((uint64_t)(x))
 #define DCA_16BE(x) dca_bswap16(x)
 #define DCA_32BE(x) dca_bswap32(x)
+#define DCA_32BE_const(x) dca_bswap32_const(x)
 #define DCA_64BE(x) dca_bswap64(x)
 #elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 #define DCA_16LE(x) dca_bswap16(x)
@@ -81,6 +146,7 @@
 #define DCA_64LE(x) dca_bswap64(x)
 #define DCA_16BE(x) ((uint16_t)(x))
 #define DCA_32BE(x) ((uint32_t)(x))
+#define DCA_32BE_const(x) ((uint32_t)(x))
 #define DCA_64BE(x) ((uint64_t)(x))
 #else
 #error Unsupported byte order
@@ -97,7 +163,7 @@ static inline uint32_t DCA_RAW32(const void *data)
 
 static inline int dca_realloc(void *parent, void *ptr, size_t nmemb, size_t size)
 {
-    void **_ptr = ptr;
+    void **_ptr = (void **) ptr;
     size_t old_size = ta_get_size(*_ptr);
     size_t new_size = ta_calc_array_size(size, nmemb);
     if (old_size < new_size) {

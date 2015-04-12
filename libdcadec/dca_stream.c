@@ -32,7 +32,8 @@
 #define SYNC_SIZE       4
 
 struct dcadec_stream {
-    FILE    *fp;
+    void    *fp;
+	const struct dcadec_stream_callbacks * cb;
 
     off_t   stream_size;
     off_t   stream_start;
@@ -52,18 +53,18 @@ static int parse_hd_hdr(struct dcadec_stream *stream)
 {
     uint64_t header[2];
 
-    if (fread(header, sizeof(header), 1, stream->fp) != 1)
-        return fseeko(stream->fp, 0, SEEK_SET);
+    if (stream->cb->read(stream->fp, header, sizeof(header)) != sizeof(header))
+        return stream->cb->seek(stream->fp, 0, SEEK_SET);
 
     if (memcmp(header, "DTSHDHDR", 8))
-        return fseeko(stream->fp, 0, SEEK_SET);
+        return stream->cb->seek(stream->fp, 0, SEEK_SET);
 
     while (true) {
-        off_t size = DCA_64BE(header[1]);
+        off_t size = (off_t) DCA_64BE(header[1]);
         if (size < 0)
             return -1;
         if (!memcmp(header, "STRMDATA", 8)) {
-            off_t pos = ftello(stream->fp);
+            off_t pos = stream->cb->tell(stream->fp);
             if (pos < 0)
                 return -1;
             stream->stream_size = size;
@@ -71,65 +72,40 @@ static int parse_hd_hdr(struct dcadec_stream *stream)
             stream->stream_end = pos + size;
             return 1;
         }
-        if (fseeko(stream->fp, size, SEEK_CUR) < 0)
+        if (stream->cb->seek(stream->fp, size, SEEK_CUR) < 0)
             return -1;
-        if (fread(header, sizeof(header), 1, stream->fp) != 1)
+        if (stream->cb->read(stream->fp, header, sizeof(header)) != sizeof(header))
             return -1;
     }
 
     return 0;
 }
 
-DCADEC_API struct dcadec_stream *dcadec_stream_open(const char *name)
+DCADEC_API struct dcadec_stream *dcadec_stream_open(const struct dcadec_stream_callbacks * cb, void * opaque)
 {
     struct dcadec_stream *stream = ta_znew(NULL, struct dcadec_stream);
     if (!stream)
         return NULL;
 
-    if (name) {
-        if (!(stream->fp = fopen(name, "rb")))
-            goto fail1;
-    } else {
-        int fd;
-#ifdef _WIN32
-        if ((fd = _dup(STDIN_FILENO)) < 0)
-            goto fail1;
-        if (_setmode(fd, _O_BINARY) < 0) {
-            _close(fd);
-            goto fail1;
-        }
-        if (!(stream->fp = fdopen(fd, "rb"))) {
-            _close(fd);
-            goto fail1;
-        }
-#else
-        if ((fd = dup(STDIN_FILENO)) < 0)
-            goto fail1;
-        if (!(stream->fp = fdopen(fd, "rb"))) {
-            close(fd);
-            goto fail1;
-        }
-#endif
-    }
+	stream->fp = opaque;
+	stream->cb = cb;
 
-    if (fseeko(stream->fp, 0, SEEK_END) == 0) {
-        off_t pos = ftello(stream->fp);
+    if (stream->cb->seek(stream->fp, 0, SEEK_END) == 0) {
+        off_t pos = stream->cb->tell(stream->fp);
         if (pos > 0)
             stream->stream_size = pos;
-        if (fseeko(stream->fp, 0, SEEK_SET) < 0)
-            goto fail2;
+        if (stream->cb->seek(stream->fp, 0, SEEK_SET) < 0)
+            goto fail;
         if (pos > 0 && parse_hd_hdr(stream) < 0)
-            goto fail2;
+            goto fail;
     }
 
     if (!(stream->buffer = ta_alloc_size(stream, BUFFER_ALIGN)))
-        goto fail2;
+        goto fail;
 
     return stream;
 
-fail2:
-    fclose(stream->fp);
-fail1:
+fail:
     ta_free(stream);
     return NULL;
 }
@@ -137,7 +113,7 @@ fail1:
 DCADEC_API void dcadec_stream_close(struct dcadec_stream *stream)
 {
     if (stream) {
-        fclose(stream->fp);
+		ta_free(stream->buffer);
         ta_free(stream);
     }
 }
@@ -163,18 +139,13 @@ static void swap16(uint32_t *data, size_t size)
     }
 }
 
-#if (defined _WIN32)
-#define DCA_FGETC   _fgetc_nolock
-#elif (defined _BSD_SOURCE)
-#define DCA_FGETC   fgetc_unlocked
-#else
-#define DCA_FGETC   fgetc
-#endif
-
 static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
 {
+	int packed = 0;
+	uint32_t saved_sync;
+
     // Stop at position indicated by STRMDATA if known
-    if (stream->stream_end > 0 && ftello(stream->fp) >= stream->stream_end)
+    if (stream->stream_end > 0 && stream->cb->tell(stream->fp) >= stream->stream_end)
         return 0;
 
     // Start with a backed up sync word. If there is none, advance one byte at
@@ -183,12 +154,21 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
     while (sync != SYNC_WORD_CORE
         && sync != SYNC_WORD_EXSS
         && sync != SYNC_WORD_CORE_LE
-        && sync != SYNC_WORD_EXSS_LE) {
-        int c = DCA_FGETC(stream->fp);
+        && sync != SYNC_WORD_EXSS_LE
+		&& sync != 0x1FFFE800
+		&& sync != 0xFF1F00E8) {
+        int c = stream->cb->getc(stream->fp);
         if (c == EOF)
             return 0;
         sync = (sync << 8) | c;
     }
+
+	if (sync == 0x1FFFE800
+		|| sync == 0xFF1F00E8)
+	{
+		packed = 1;
+		saved_sync = sync;
+	}
 
     // Tried to read the second (EXSS) frame and it was core again. Back up
     // the sync word just read and return.
@@ -206,8 +186,15 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
 
     // Read the frame header
     uint8_t *buf = stream->buffer + stream->packet_size;
-    if (fread(buf + SYNC_SIZE, HEADER_SIZE - SYNC_SIZE, 1, stream->fp) != 1)
+	if (stream->cb->seek(stream->fp, -SYNC_SIZE, SEEK_CUR) < 0)
+		return 0;
+    if (stream->cb->read(stream->fp, buf, HEADER_SIZE) != HEADER_SIZE)
         return 0;
+
+	if (packed)
+		dcadec_stream_pack(buf, buf, HEADER_SIZE / 8, saved_sync);
+
+	sync = DCA_32BE(*(uint32_t*)buf);
 
     bool swap = false;
     switch (sync) {
@@ -242,6 +229,8 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
         frame_size = bits_get(&bits, 14) + 1;
         if (frame_size < 96)
             return -2;
+		if (packed)
+			frame_size += (frame_size / 7) & ~1;
     } else {
         bits_skip(&bits, 10);
         bool wide_hdr = bits_get1(&bits);
@@ -252,7 +241,7 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
     }
 
     // Align frame size to 4-byte boundary
-    size_t aligned_size = (frame_size + 3) & ~3;
+    size_t aligned_size = (frame_size + 7) & ~7;
 
     // Reallocate frame buffer
     if (realloc_buffer(stream, stream->packet_size + aligned_size) < 0)
@@ -260,8 +249,11 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
 
     // Read the rest of the frame
     buf = stream->buffer + stream->packet_size;
-    if (fread(buf + HEADER_SIZE, frame_size - HEADER_SIZE, 1, stream->fp) != 1)
+    if (stream->cb->read(stream->fp, buf + (HEADER_SIZE - (packed ? 2 : 0)), frame_size - (HEADER_SIZE - (packed ? 2 : 0))) != frame_size - (HEADER_SIZE - (packed ? 2 : 0)))
         return 0;
+
+	if (packed)
+		dcadec_stream_pack(buf + HEADER_SIZE - 2, buf + HEADER_SIZE - 2, (frame_size - HEADER_SIZE + 7) / 8, saved_sync);
 
     if (swap)
         swap16((uint32_t *)(buf + HEADER_SIZE), (aligned_size - HEADER_SIZE) / 4);
@@ -293,8 +285,10 @@ DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, 
         ret = read_frame(stream, &sync);
         if (ret == 1)
             break;
-        if (ret == 0)
-            return ferror(stream->fp) ? -DCADEC_EIO : 0;
+		if (ret == 0)
+			return 0;
+        if (ret == -2)
+            return -DCADEC_EIO;
         if (ret == -1)
             return -DCADEC_ENOMEM;
     }
@@ -302,6 +296,7 @@ DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, 
     // Check for EXSS that may follow core frame and try to concatenate both
     // frames into single packet
     if (sync == SYNC_WORD_CORE) {
+		off_t offset = stream->cb->tell(stream->fp);
         ret = read_frame(stream, NULL);
         if (ret == -1)
             return -DCADEC_ENOMEM;
@@ -310,6 +305,8 @@ DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, 
         if (ret == 0 && stream->core_plus_exss)
             return 0;
         stream->core_plus_exss = (ret == 1);
+		if (!ret)
+			stream->cb->seek(stream->fp, offset, SEEK_SET);
     } else {
         stream->core_plus_exss = false;
     }
@@ -324,7 +321,7 @@ DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, 
 DCADEC_API int dcadec_stream_progress(struct dcadec_stream *stream)
 {
     if (stream->stream_size > 0) {
-        off_t pos = ftello(stream->fp);
+        off_t pos = stream->cb->tell(stream->fp);
         if (pos < stream->stream_start)
             return 0;
         if (pos >= stream->stream_start + stream->stream_size)
@@ -332,4 +329,29 @@ DCADEC_API int dcadec_stream_progress(struct dcadec_stream *stream)
         return (int)((pos - stream->stream_start) * 100 / stream->stream_size);
     }
     return -1;
+}
+
+void dcadec_stream_pack(uint8_t * out, const uint8_t * data, size_t count8, uint32_t sync)
+{
+	size_t i;
+	if (sync == 0xFF1F00E8)
+	{
+		swap16(data, count8 * 2);
+		sync = 0x1FFFE800;
+	}
+	if (sync == 0x1FFFE800)
+	{
+		for (i = 0; i < count8; ++i)
+		{
+			out[0] = ((data[0] & 0x3F) << 2) | (data[1] >> 6);
+			out[1] = ((data[1] & 0x3F) << 2) | ((data[2] & 0x30) >> 4);
+			out[2] = ((data[2] & 0x0F) << 4) | (data[3] >> 4);
+			out[3] = ((data[3] & 0x0F) << 4) | ((data[4] & 0x3C) >> 2);
+			out[4] = ((data[4] & 0x03) << 6) | (data[5] >> 2);
+			out[5] = ((data[5] & 0x03) << 6) | (data[6] & 0x3F);
+			out[6] = data[7];
+			data += 8;
+			out += 7;
+		}
+	}
 }

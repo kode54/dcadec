@@ -21,11 +21,24 @@
 
 #include "dca_context.h"
 
+#include <stdio.h>
+#include <sys/types.h>
+
 struct dcadec_stream;
 
-DCADEC_API struct dcadec_stream *dcadec_stream_open(const char *name);
+struct dcadec_stream_callbacks
+{
+	int(*seek)(void * opaque, off_t offset, int whence);
+	off_t(*tell)(void * opaque);
+	int(*getc)(void * opaque);
+	size_t(*read)(void * opaque, void * buf, size_t count);
+};
+
+DCADEC_API struct dcadec_stream *dcadec_stream_open(const struct dcadec_stream_callbacks * callbacks, void * opaque);
 DCADEC_API void dcadec_stream_close(struct dcadec_stream *stream);
 DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, size_t *size);
 DCADEC_API int dcadec_stream_progress(struct dcadec_stream *stream);
+
+void dcadec_stream_pack(uint8_t * out, const uint8_t * data, size_t count8, uint32_t sync);
 
 #endif

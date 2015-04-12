@@ -18,6 +18,10 @@
 #include <stdbool.h>
 #include <stdarg.h>
 
+#ifdef _MSC_VER
+#define inline __inline
+#endif
+
 void *ta_alloc_size(void *ta_parent, size_t size);
 void *ta_zalloc_size(void *ta_parent, size_t size);
 void *ta_realloc_size(void *ta_parent, void *ptr, size_t size);

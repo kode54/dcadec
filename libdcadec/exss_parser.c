@@ -366,7 +366,7 @@ int exss_parse(struct exss_parser *exss, uint8_t *data, size_t size)
 {
     int i, j, ret;
 
-    bits_init(&exss->bits, data, size);
+    bits_init(&exss->bits, data, size, 0);
 
     // Extension substream sync word
     bits_skip(&exss->bits, 32);

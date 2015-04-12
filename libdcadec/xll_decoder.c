@@ -935,7 +935,7 @@ static int parse_frame(struct xll_decoder *xll, uint8_t *data, size_t size, stru
 {
     int ret;
 
-    bits_init(&xll->bits, data, size);
+    bits_init(&xll->bits, data, size, 0);
     if ((ret = parse_common_header(xll)) < 0)
         return ret;
     if ((ret = parse_sub_headers(xll, asset)) < 0)

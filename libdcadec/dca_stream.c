@@ -356,6 +356,8 @@ DCADEC_API int dcadec_stream_progress(struct dcadec_stream *stream)
 size_t dcadec_stream_pack(uint8_t * out, const uint8_t * data, size_t count8, uint32_t sync)
 {
 	size_t i;
+	if (sync == 0)
+		sync = DCA_32BE(*(uint32_t*)data);
 	if (sync == 0xFF1F00E8)
 	{
 		swap16(data, count8 * 2);
@@ -375,7 +377,8 @@ size_t dcadec_stream_pack(uint8_t * out, const uint8_t * data, size_t count8, ui
 			data += 8;
 			out += 7;
 		}
+		return count8 * 7;
 	}
 
-	return count8 * 7;
+	return count8 * 8;
 }

@@ -36,7 +36,8 @@ struct dcadec_stream_callbacks
 
 DCADEC_API struct dcadec_stream *dcadec_stream_open(const struct dcadec_stream_callbacks * callbacks, void * opaque);
 DCADEC_API void dcadec_stream_close(struct dcadec_stream *stream);
-DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, size_t *size);
+DCADEC_API void dcadec_stream_reset(struct dcadec_stream *stream);
+DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, size_t *size, uint32_t *packed_p);
 DCADEC_API int dcadec_stream_progress(struct dcadec_stream *stream);
 
 size_t dcadec_stream_pack(uint8_t * out, const uint8_t * data, size_t count8, uint32_t sync);

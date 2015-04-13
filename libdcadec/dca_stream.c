@@ -110,6 +110,15 @@ fail:
     return NULL;
 }
 
+DCADEC_API void dcadec_stream_reset(struct dcadec_stream *stream)
+{
+	if (stream) {
+		if (stream->backup_sync)
+			stream->cb->seek(stream->fp, -SYNC_SIZE, SEEK_CUR);
+		stream->backup_sync = 0;
+	}
+}
+
 DCADEC_API void dcadec_stream_close(struct dcadec_stream *stream)
 {
     if (stream) {
@@ -139,7 +148,7 @@ static void swap16(uint32_t *data, size_t size)
     }
 }
 
-static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
+static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p, uint32_t *packed_p)
 {
 	int packed = 0;
 	uint32_t saved_sync;
@@ -235,7 +244,7 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
         if (frame_size < 96)
             return -2;
 		if (packed)
-			frame_size += (frame_size / 7) & ~1;
+			frame_size += frame_size / 7;
     } else {
         bits_skip(&bits, 10);
         bool wide_hdr = bits_get1(&bits);
@@ -285,10 +294,12 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
 
     if (sync_p)
         *sync_p = sync;
-    return 1;
+	if (packed_p)
+		*packed_p = packed;
+	return 1;
 }
 
-DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, size_t *size)
+DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, size_t *size, uint32_t * packed_p)
 {
     uint32_t sync;
     int ret;
@@ -296,7 +307,7 @@ DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, 
     // Loop until valid DTS core or standalone EXSS frame is read or EOF is
     // reached
     while (true) {
-        ret = read_frame(stream, &sync);
+        ret = read_frame(stream, &sync, packed_p);
         if (ret == 1)
             break;
 		if (ret == 0)
@@ -310,7 +321,7 @@ DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, 
     // Check for EXSS that may follow core frame and try to concatenate both
     // frames into single packet
     if (sync == SYNC_WORD_CORE) {
-        ret = read_frame(stream, NULL);
+        ret = read_frame(stream, NULL, NULL);
         if (ret == -1)
             return -DCADEC_ENOMEM;
         // If the previous frame was core + EXSS, skip the incomplete (core

@@ -143,6 +143,7 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
 {
 	int packed = 0;
 	uint32_t saved_sync;
+	size_t packed_size;
 
     // Stop at position indicated by STRMDATA if known
     if (stream->stream_end > 0 && stream->cb->tell(stream->fp) >= stream->stream_end)
@@ -186,15 +187,19 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
 
     // Read the frame header
     uint8_t *buf = stream->buffer + stream->packet_size;
-	if (stream->cb->seek(stream->fp, -SYNC_SIZE, SEEK_CUR) < 0)
-		return 0;
-    if (stream->cb->read(stream->fp, buf, HEADER_SIZE) != HEADER_SIZE)
+    if (stream->cb->read(stream->fp, buf + SYNC_SIZE, HEADER_SIZE - SYNC_SIZE) != HEADER_SIZE - SYNC_SIZE)
         return 0;
 
 	if (packed)
-		dcadec_stream_pack(buf, buf, HEADER_SIZE / 8, saved_sync);
-
-	sync = DCA_32BE(*(uint32_t*)buf);
+	{
+		// Store partial sync word so it will be re-packed
+		buf[0] = (sync >> 24) & 0xff;
+		buf[1] = (sync >> 16) & 0xff;
+		buf[2] = (sync >> 8) & 0xff;
+		buf[3] = (sync >> 0) & 0xff;
+		packed_size = dcadec_stream_pack(buf, buf, HEADER_SIZE / 8, saved_sync);
+		sync = DCA_32BE(*(uint32_t*)buf);
+	}
 
     bool swap = false;
     switch (sync) {
@@ -241,7 +246,11 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
     }
 
     // Align frame size to 4-byte boundary
-    size_t aligned_size = (frame_size + 7) & ~7;
+	size_t aligned_size;
+	if (packed)
+		aligned_size = (frame_size + 7) & ~7;
+	else
+		aligned_size = (frame_size + 3) & ~3;
 
     // Reallocate frame buffer
     if (realloc_buffer(stream, stream->packet_size + aligned_size) < 0)
@@ -249,14 +258,19 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
 
     // Read the rest of the frame
     buf = stream->buffer + stream->packet_size;
-    if (stream->cb->read(stream->fp, buf + (HEADER_SIZE - (packed ? 2 : 0)), frame_size - (HEADER_SIZE - (packed ? 2 : 0))) != frame_size - (HEADER_SIZE - (packed ? 2 : 0)))
-        return 0;
-
+	if (stream->cb->read(stream->fp, buf + HEADER_SIZE, frame_size - HEADER_SIZE) != frame_size - HEADER_SIZE)
+		return 0;
 	if (packed)
-		dcadec_stream_pack(buf + HEADER_SIZE - 2, buf + HEADER_SIZE - 2, (frame_size - HEADER_SIZE + 7) / 8, saved_sync);
-
-    if (swap)
-        swap16((uint32_t *)(buf + HEADER_SIZE), (aligned_size - HEADER_SIZE) / 4);
+	{
+		packed_size += dcadec_stream_pack(buf + packed_size, buf + HEADER_SIZE, (frame_size - HEADER_SIZE + 7) / 8, saved_sync);
+		frame_size = packed_size;
+		aligned_size = (frame_size + 3) & ~3;
+	}
+	else
+	{
+		if (swap)
+			swap16((uint32_t *)(buf + HEADER_SIZE), (aligned_size - HEADER_SIZE) / 4);
+	}
 
     stream->packet_size += aligned_size;
 
@@ -296,7 +310,6 @@ DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, 
     // Check for EXSS that may follow core frame and try to concatenate both
     // frames into single packet
     if (sync == SYNC_WORD_CORE) {
-		off_t offset = stream->cb->tell(stream->fp);
         ret = read_frame(stream, NULL);
         if (ret == -1)
             return -DCADEC_ENOMEM;
@@ -305,8 +318,6 @@ DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, 
         if (ret == 0 && stream->core_plus_exss)
             return 0;
         stream->core_plus_exss = (ret == 1);
-		if (!ret)
-			stream->cb->seek(stream->fp, offset, SEEK_SET);
     } else {
         stream->core_plus_exss = false;
     }
@@ -331,7 +342,7 @@ DCADEC_API int dcadec_stream_progress(struct dcadec_stream *stream)
     return -1;
 }
 
-void dcadec_stream_pack(uint8_t * out, const uint8_t * data, size_t count8, uint32_t sync)
+size_t dcadec_stream_pack(uint8_t * out, const uint8_t * data, size_t count8, uint32_t sync)
 {
 	size_t i;
 	if (sync == 0xFF1F00E8)
@@ -354,4 +365,6 @@ void dcadec_stream_pack(uint8_t * out, const uint8_t * data, size_t count8, uint
 			out += 7;
 		}
 	}
+
+	return count8 * 7;
 }

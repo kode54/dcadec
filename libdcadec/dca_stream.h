@@ -39,6 +39,6 @@ DCADEC_API void dcadec_stream_close(struct dcadec_stream *stream);
 DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, size_t *size);
 DCADEC_API int dcadec_stream_progress(struct dcadec_stream *stream);
 
-void dcadec_stream_pack(uint8_t * out, const uint8_t * data, size_t count8, uint32_t sync);
+size_t dcadec_stream_pack(uint8_t * out, const uint8_t * data, size_t count8, uint32_t sync);
 
 #endif

@@ -136,6 +136,7 @@ static __inline uint32_t dca_popcount(uint32_t i)
 	(((uint32_t)(x) >> 8) & 0xFF00) | \
 	(((uint32_t)(x) << 8) & 0xFF0000) | \
 	(((uint32_t)(x) << 24) & 0xFF000000))
+#define dca_countof(x)  (sizeof(x) / sizeof((x)[0]))
 
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define DCA_16LE(x) ((uint16_t)(x))
@@ -157,14 +158,30 @@ static __inline uint32_t dca_popcount(uint32_t i)
 #error Unsupported byte order
 #endif
 
-#define dca_countof(x)  (sizeof(x) / sizeof((x)[0]))
+#define DCA_MAX(a, b) \
+    ({ typeof(a) _a = (a); \
+       typeof(b) _b = (b); \
+       _a > _b ? _a : _b; })
 
-static inline uint32_t DCA_RAW32(const void *data)
-{
-    uint32_t res;
-    memcpy(&res, data, sizeof(res));
-    return res;
-}
+#define DCA_MIN(a, b) \
+    ({ typeof(a) _a = (a); \
+       typeof(b) _b = (b); \
+       _a < _b ? _a : _b; })
+
+#define DCA_MEM16BE(data) \
+    (((uint32_t)(data)[0] <<  8) | (data)[1])
+
+#define DCA_MEM24BE(data) \
+    (((uint32_t)(data)[0] << 16) | DCA_MEM16BE(&(data)[1]))
+
+#define DCA_MEM32BE(data) \
+    (((uint32_t)(data)[0] << 24) | DCA_MEM24BE(&(data)[1]))
+
+#define DCA_MEM40BE(data) \
+    (((uint64_t)(data)[0] << 32) | DCA_MEM32BE(&(data)[1]))
+
+#define DCA_MEM32NE(data) \
+    ({ uint32_t _res; memcpy(&_res, data, sizeof(_res)); _res; })
 
 static inline int dca_realloc(void *parent, void *ptr, size_t nmemb, size_t size)
 {

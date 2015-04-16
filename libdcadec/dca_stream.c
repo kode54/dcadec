@@ -31,13 +31,25 @@
 #define HEADER_SIZE     16
 #define SYNC_SIZE       4
 
+#define AUPR_HDR    UINT64_C(0x415550522D484452)
+#define DTSHDHDR    UINT64_C(0x4454534844484452)
+#define STRMDATA    UINT64_C(0x5354524D44415441)
+
 struct dcadec_stream {
     void    *fp;
-	const struct dcadec_stream_callbacks * cb;
+    const struct dcadec_stream_callbacks * cb;
 
     off_t   stream_size;
     off_t   stream_start;
     off_t   stream_end;
+
+    bool        aupr_present;
+    uint32_t    aupr_sample_rate;
+    uint32_t    aupr_nframes;
+    uint32_t    aupr_nframesamples;
+    uint64_t    aupr_npcmsamples;
+    uint32_t    aupr_ch_mask;
+    uint32_t    aupr_ndelaysamples;
 
     uint8_t     *buffer;
     size_t      packet_size;
@@ -56,15 +68,17 @@ static int parse_hd_hdr(struct dcadec_stream *stream)
     if (stream->cb->read(stream->fp, header, sizeof(header)) != sizeof(header))
         return stream->cb->seek(stream->fp, 0, SEEK_SET);
 
-    if (memcmp(header, "DTSHDHDR", 8))
+    if (header[0] != DCA_64BE(DTSHDHDR))
         return stream->cb->seek(stream->fp, 0, SEEK_SET);
 
     while (true) {
-        off_t size = (off_t) DCA_64BE(header[1]);
-        if (size < 0)
+        uint64_t size = DCA_64BE(header[1]);
+        if (size > INT64_MAX)
             return -1;
-        if (!memcmp(header, "STRMDATA", 8)) {
-            off_t pos = stream->cb->tell(stream->fp);
+
+        switch (header[0]) {
+        case DCA_64BE(STRMDATA): {
+            off_t pos = steam->cb->tell(stream->fp);
             if (pos < 0)
                 return -1;
             stream->stream_size = size;
@@ -72,8 +86,45 @@ static int parse_hd_hdr(struct dcadec_stream *stream)
             stream->stream_end = pos + size;
             return 1;
         }
-        if (stream->cb->seek(stream->fp, size, SEEK_CUR) < 0)
-            return -1;
+
+        case DCA_64BE(AUPR_HDR): {
+            uint8_t data[21];
+
+            if (size < sizeof(data))
+                return -1;
+            if (stream->cb->read(stream->fp, data, sizeof(data)) != sizeof(data))
+                return -1;
+            if (stream->cb->read(stream->fp, size - sizeof(data), SEEK_CUR) < 0)
+                return -1;
+
+            stream->aupr_present = true;
+
+            // Sample rate in Hz
+            stream->aupr_sample_rate = DCA_MEM24BE(&data[3]);
+
+            // Number of frames
+            stream->aupr_nframes = DCA_MEM32BE(&data[6]);
+
+            // Number of PCM samples per frame
+            stream->aupr_nframesamples = DCA_MEM16BE(&data[10]);
+
+            // Number of PCM samples encoded
+            stream->aupr_npcmsamples = DCA_MEM40BE(&data[12]);
+
+            // EXSS channel mask
+            stream->aupr_ch_mask = DCA_MEM16BE(&data[17]);
+
+            // Codec delay in samples
+            stream->aupr_ndelaysamples = DCA_MEM16BE(&data[19]);
+            break;
+        }
+
+        default:
+            if (stream->cb->seek(stream->fp, size, SEEK_CUR) < 0)
+                return -1;
+            break;
+        }
+
         if (stream->cb->read(stream->fp, header, sizeof(header)) != sizeof(header))
             return -1;
     }
@@ -87,8 +138,8 @@ DCADEC_API struct dcadec_stream *dcadec_stream_open(const struct dcadec_stream_c
     if (!stream)
         return NULL;
 
-	stream->fp = opaque;
-	stream->cb = cb;
+    stream->fp = opaque;
+    stream->cb = cb;
 
     if (stream->cb->seek(stream->fp, 0, SEEK_END) == 0) {
         off_t pos = stream->cb->tell(stream->fp);
@@ -112,17 +163,17 @@ fail:
 
 DCADEC_API void dcadec_stream_reset(struct dcadec_stream *stream)
 {
-	if (stream) {
-		if (stream->backup_sync)
-			stream->cb->seek(stream->fp, -SYNC_SIZE, SEEK_CUR);
-		stream->backup_sync = 0;
-	}
+    if (stream) {
+        if (stream->backup_sync)
+            stream->cb->seek(stream->fp, -SYNC_SIZE, SEEK_CUR);
+        stream->backup_sync = 0;
+    }
 }
 
 DCADEC_API void dcadec_stream_close(struct dcadec_stream *stream)
 {
     if (stream) {
-		ta_free(stream->buffer);
+        ta_free(stream->buffer);
         ta_free(stream);
     }
 }
@@ -150,9 +201,9 @@ static void swap16(uint32_t *data, size_t size)
 
 static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p, uint32_t *packed_p)
 {
-	int packed = 0;
-	uint32_t saved_sync;
-	size_t packed_size;
+    int packed = 0;
+    uint32_t saved_sync;
+    size_t packed_size;
 
     // Stop at position indicated by STRMDATA if known
     if (stream->stream_end > 0 && stream->cb->tell(stream->fp) >= stream->stream_end)
@@ -165,20 +216,20 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p, uint32_t *
         && sync != SYNC_WORD_EXSS
         && sync != SYNC_WORD_CORE_LE
         && sync != SYNC_WORD_EXSS_LE
-		&& sync != 0x1FFFE800
-		&& sync != 0xFF1F00E8) {
+        && sync != SYNC_WORD_CORE_14
+        && sync != SYNC_WORD_CORE_14_LE) {
         int c = stream->cb->getc(stream->fp);
         if (c == EOF)
             return 0;
         sync = (sync << 8) | c;
     }
 
-	if (sync == 0x1FFFE800
-		|| sync == 0xFF1F00E8)
-	{
-		packed = 1;
-		saved_sync = sync;
-	}
+    if (sync == SYNC_WORD_CORE_14
+        || sync == SYNC_WORD_CORE_14_LE)
+    {
+        packed = 1;
+        saved_sync = sync;
+    }
 
     // Tried to read the second (EXSS) frame and it was core again. Back up
     // the sync word just read and return.
@@ -199,16 +250,16 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p, uint32_t *
     if (stream->cb->read(stream->fp, buf + SYNC_SIZE, HEADER_SIZE - SYNC_SIZE) != HEADER_SIZE - SYNC_SIZE)
         return 0;
 
-	if (packed)
-	{
-		// Store partial sync word so it will be re-packed
-		buf[0] = (sync >> 24) & 0xff;
-		buf[1] = (sync >> 16) & 0xff;
-		buf[2] = (sync >> 8) & 0xff;
-		buf[3] = (sync >> 0) & 0xff;
-		packed_size = dcadec_stream_pack(buf, buf, HEADER_SIZE / 8, saved_sync);
-		sync = DCA_32BE(*(uint32_t*)buf);
-	}
+    if (packed)
+    {
+        // Store partial sync word so it will be re-packed
+        buf[0] = (sync >> 24) & 0xff;
+        buf[1] = (sync >> 16) & 0xff;
+        buf[2] = (sync >> 8) & 0xff;
+        buf[3] = (sync >> 0) & 0xff;
+        packed_size = dcadec_stream_pack(buf, buf, HEADER_SIZE / 8, saved_sync);
+        sync = DCA_32BE(*(uint32_t*)buf);
+    }
 
     bool swap = false;
     switch (sync) {
@@ -243,8 +294,8 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p, uint32_t *
         frame_size = bits_get(&bits, 14) + 1;
         if (frame_size < 96)
             return -2;
-		if (packed)
-			frame_size += frame_size / 7;
+        if (packed)
+            frame_size += frame_size / 7;
     } else {
         bits_skip(&bits, 10);
         bool wide_hdr = bits_get1(&bits);
@@ -255,11 +306,11 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p, uint32_t *
     }
 
     // Align frame size to 4-byte boundary
-	size_t aligned_size;
-	if (packed)
-		aligned_size = (frame_size + 7) & ~7;
-	else
-		aligned_size = (frame_size + 3) & ~3;
+    size_t aligned_size;
+    if (packed)
+        aligned_size = (frame_size + 7) & ~7;
+    else
+        aligned_size = (frame_size + 3) & ~3;
 
     // Reallocate frame buffer
     if (realloc_buffer(stream, stream->packet_size + aligned_size) < 0)
@@ -267,19 +318,19 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p, uint32_t *
 
     // Read the rest of the frame
     buf = stream->buffer + stream->packet_size;
-	if (stream->cb->read(stream->fp, buf + HEADER_SIZE, frame_size - HEADER_SIZE) != frame_size - HEADER_SIZE)
-		return 0;
-	if (packed)
-	{
-		packed_size += dcadec_stream_pack(buf + packed_size, buf + HEADER_SIZE, (frame_size - HEADER_SIZE + 7) / 8, saved_sync);
-		frame_size = packed_size;
-		aligned_size = (frame_size + 3) & ~3;
-	}
-	else
-	{
-		if (swap)
-			swap16((uint32_t *)(buf + HEADER_SIZE), (aligned_size - HEADER_SIZE) / 4);
-	}
+    if (stream->cb->read(stream->fp, buf + HEADER_SIZE, frame_size - HEADER_SIZE) != frame_size - HEADER_SIZE)
+        return 0;
+    if (packed)
+    {
+        packed_size += dcadec_stream_pack(buf + packed_size, buf + HEADER_SIZE, (frame_size - HEADER_SIZE + 7) / 8, saved_sync);
+        frame_size = packed_size;
+        aligned_size = (frame_size + 3) & ~3;
+    }
+    else
+    {
+        if (swap)
+            swap16((uint32_t *)(buf + HEADER_SIZE), (aligned_size - HEADER_SIZE) / 4);
+    }
 
     stream->packet_size += aligned_size;
 
@@ -294,9 +345,9 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p, uint32_t *
 
     if (sync_p)
         *sync_p = sync;
-	if (packed_p)
-		*packed_p = packed;
-	return 1;
+    if (packed_p)
+        *packed_p = packed;
+    return 1;
 }
 
 DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, size_t *size, uint32_t * packed_p)
@@ -310,8 +361,8 @@ DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, 
         ret = read_frame(stream, &sync, packed_p);
         if (ret == 1)
             break;
-		if (ret == 0)
-			return 0;
+        if (ret == 0)
+            return 0;
         if (ret == -2)
             return -DCADEC_EIO;
         if (ret == -1)
@@ -355,30 +406,53 @@ DCADEC_API int dcadec_stream_progress(struct dcadec_stream *stream)
 
 size_t dcadec_stream_pack(uint8_t * out, const uint8_t * data, size_t count8, uint32_t sync)
 {
-	size_t i;
-	if (sync == 0)
-		sync = DCA_32BE(*(uint32_t*)data);
-	if (sync == 0xFF1F00E8)
-	{
-		swap16(data, count8 * 2);
-		sync = 0x1FFFE800;
-	}
-	if (sync == 0x1FFFE800)
-	{
-		for (i = 0; i < count8; ++i)
-		{
-			out[0] = ((data[0] & 0x3F) << 2) | (data[1] >> 6);
-			out[1] = ((data[1] & 0x3F) << 2) | ((data[2] & 0x30) >> 4);
-			out[2] = ((data[2] & 0x0F) << 4) | (data[3] >> 4);
-			out[3] = ((data[3] & 0x0F) << 4) | ((data[4] & 0x3C) >> 2);
-			out[4] = ((data[4] & 0x03) << 6) | (data[5] >> 2);
-			out[5] = ((data[5] & 0x03) << 6) | (data[6] & 0x3F);
-			out[6] = data[7];
-			data += 8;
-			out += 7;
-		}
-		return count8 * 7;
-	}
+    size_t i;
+    if (sync == 0)
+        sync = DCA_32BE(*(uint32_t*)data);
+    if (sync == SYNC_WORD_CORE_14_LE)
+    {
+        swap16(data, count8 * 2);
+        sync = SYNC_WORD_CORE_14;
+    }
+    if (sync == SYNC_WORD_CORE_14)
+    {
+        for (i = 0; i < count8; ++i)
+        {
+            out[0] = ((data[0] & 0x3F) << 2) | (data[1] >> 6);
+            out[1] = ((data[1] & 0x3F) << 2) | ((data[2] & 0x30) >> 4);
+            out[2] = ((data[2] & 0x0F) << 4) | (data[3] >> 4);
+            out[3] = ((data[3] & 0x0F) << 4) | ((data[4] & 0x3C) >> 2);
+            out[4] = ((data[4] & 0x03) << 6) | (data[5] >> 2);
+            out[5] = ((data[5] & 0x03) << 6) | (data[6] & 0x3F);
+            out[6] = data[7];
+            data += 8;
+            out += 7;
+        }
+        return count8 * 7;
+    }
 
-	return count8 * 8;
+    return count8 * 8;
+}
+
+DCADEC_API struct dcadec_stream_info *dcadec_stream_get_info(struct dcadec_stream *stream)
+{
+    if (!stream || !stream->aupr_present)
+        return NULL;
+    struct dcadec_stream_info *info = ta_znew(NULL, struct dcadec_stream_info);
+    if (!info)
+        return NULL;
+
+    info->stream_size = stream->stream_size;
+    info->sample_rate = stream->aupr_sample_rate;
+    info->nframes = stream->aupr_nframes;
+    info->nframesamples = stream->aupr_nframesamples;
+    info->npcmsamples = stream->aupr_npcmsamples;
+    info->ch_mask = stream->aupr_ch_mask;
+    info->ndelaysamples = stream->aupr_ndelaysamples;
+    return info;
+}
+
+DCADEC_API void dcadec_stream_free_info(struct dcadec_stream_info *info)
+{
+    ta_free(info);
 }

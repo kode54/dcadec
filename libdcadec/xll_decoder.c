@@ -180,7 +180,7 @@ static int chs_parse_header(struct xll_chset *chs, struct exss_asset *asset)
         chs->primary_chset = true;
         chs->dmix_coeffs_present = false;
         chs->dmix_embedded = false;
-        chs->hier_chset = false;
+        chs->hier_chset = true;
         chs->ch_mask_enabled = false;
         chs->ch_mask = 0;
 
@@ -502,13 +502,14 @@ static int chs_parse_band_data(struct xll_chset *chs, int band, int seg, size_t 
                 }
 
                 // Unpack all residuals of part B of segment 0 and others
-                for (j = 0; j < nsamples_part_b; j++)
+                for (j = 0; j < nsamples_part_b; j++) {
                     if (part_b[j] == -1)
                         part_b[j] = bits_get_signed_linear(&xll->bits,
                                                            chs->bitalloc_hybrid_linear[k]);
                     else
                         part_b[j] = bits_get_signed_rice(&xll->bits,
                                                          chs->bitalloc_part_b[k]);
+                }
             } else {
                 // Rice codes
                 // Unpack all residuals of part B of segment 0 and others
@@ -541,13 +542,15 @@ static int chs_parse_band_data(struct xll_chset *chs, int band, int seg, size_t 
             return ret;
 
         // Unpack all LSB parts of residuals of this segment
-        for (i = 0; i < chs->nchannels; i++)
-            if (chs->nscalablelsbs[band][i])
+        for (i = 0; i < chs->nchannels; i++) {
+            if (chs->nscalablelsbs[band][i]) {
                 bits_get_array(&xll->bits,
                                chs->lsb_sample_buffer[band][i] +
                                seg * xll->nsegsamples,
                                xll->nsegsamples,
                                chs->nscalablelsbs[band][i]);
+            }
+        }
     }
 
     // Skip to the end of band data
@@ -572,27 +575,11 @@ void xll_filter_band_data(struct xll_chset *chs, int band)
     int nsamples = xll->nframesamples;
     int i, j, k;
 
-    // Inverse fixed coefficient prediction
+    // Inverse adaptive or fixed prediction
     for (i = 0; i < chs->nchannels; i++) {
-        int order = chs->fixed_pred_order[band][i];
-        if (order) {
-            int *buf = chs->msb_sample_buffer[band][i];
-            int tmp[8] = { 0 };
-            for (j = 0; j < nsamples; j++) {
-                tmp[0] = buf[j];
-                for (k = 0; k < order; k++) {
-                    tmp[k * 2 + 2] = tmp[k * 2 + 0] + tmp[k * 2 + 1];
-                    tmp[k * 2 + 1] = tmp[k * 2 + 2];
-                }
-                buf[j] = tmp[k * 2];
-            }
-        }
-    }
-
-    // Inverse adaptive prediction
-    for (i = 0; i < chs->nchannels; i++) {
+        int *buf = chs->msb_sample_buffer[band][i];
         int order = chs->adapt_pred_order[band][i];
-        if (order) {
+        if (order > 0) {
             int coeff[16];
             // Conversion from reflection coefficients to direct form coefficients
             for (j = 0; j < order; j++) {
@@ -605,7 +592,6 @@ void xll_filter_band_data(struct xll_chset *chs, int band)
                 }
                 coeff[j] = rc;
             }
-            int *buf = chs->msb_sample_buffer[band][i];
             for (j = 0; j < nsamples - order; j++) {
                 int64_t err = INT64_C(0);
                 for (k = 0; k < order; k++)
@@ -614,6 +600,12 @@ void xll_filter_band_data(struct xll_chset *chs, int band)
                 // Calculate the original sample
                 buf[j + k] -= clip23(norm16(err));
             }
+        } else {
+            // Inverse fixed coefficient prediction
+            order = chs->fixed_pred_order[band][i];
+            for (j = 0; j < order; j++)
+                for (k = 1; k < nsamples; k++)
+                    buf[k] += buf[k - 1];
         }
     }
 
@@ -857,7 +849,8 @@ static int parse_sub_headers(struct xll_decoder *xll, struct exss_asset *asset)
             return ret;
         if (chs->nfreqbands > xll->nfreqbands)
             xll->nfreqbands = chs->nfreqbands;
-        xll->nchannels += chs->nchannels;
+        if (chs->hier_chset)
+            xll->nchannels += chs->nchannels;
     }
 
     // Number of active channel sets to decode

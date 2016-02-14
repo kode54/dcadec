@@ -21,7 +21,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <inttypes.h>
+
+#ifdef _MSC_VER
+#include "getopt.h"
+#else
 #include <unistd.h>
+#endif
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -34,13 +40,13 @@
 #include "libdcadec/dca_context.h"
 #include "libdcadec/dca_waveout.h"
 
-static void print_help(char *name)
+static void print_help(const char *name)
 {
     fprintf(stderr,
-"Usage: %s [-26bcfhlnPqSsx] <input.dts> [output.wav]\n"
+"Usage: %s [-26bcfhilmnPqSx] <input.dts> [output.wav]\n"
 "dcadec is a free DTS Coherent Acoustics decoder. Supported options:\n"
 "\n"
-"-2  Extract embedded 2.0 downmix.\n"
+"-2  Extract embedded 2.0 downmix if present, otherwise extract 5.1 downmix.\n"
 "\n"
 "-6  Extract embedded 5.1 downmix.\n"
 "\n"
@@ -53,9 +59,15 @@ static void print_help(char *name)
 "\n"
 "-h  Show this help message.\n"
 "\n"
-"-l  Enable lenient decoding mode. Attempt to recover from errors.\n"
+"-i  Use IIR filter for floating point DTS core LFE channel interpolation.\n"
 "\n"
-"-n  No-act mode. Parse DTS bitstream without writing WAV file.\n"
+"-l  Enable lenient decoding mode. Attempt to recover from errors by skipping\n"
+"    non-decodable parts of the stream.\n"
+"\n"
+"-m  Write a mono WAV file for each native DTS channel. Output file name must\n"
+"    include `%%s' sub-string that will be replaced with DTS channel name.\n"
+"\n"
+"-n  No-act mode. Parse DTS bitstream without writing WAV file(s).\n"
 "\n"
 "-P  Disable progress indicator.\n"
 "\n"
@@ -63,9 +75,6 @@ static void print_help(char *name)
 "    and errors are still printed.\n"
 "\n"
 "-S  Don't strip padding samples for streams within DTS-HD container.\n"
-"\n"
-"-s  Force bit width reduction of DTS core from 24 bit to source PCM resolution.\n"
-"    Developer option, degrades sound quality.\n"
 "\n"
 "-x  Force use of X96 synthesis filter for DTS core interpolation. Developer\n"
 "    option, degrades sound quality.\n"
@@ -81,42 +90,74 @@ static void print_help(char *name)
 "Public License version 2.1 for details.\n", name);
 }
 
-static void print_info(struct dcadec_context *context)
+static const char * const spkr_pair_names[] = {
+    "C",    "LR",     "LsRs",   "LFE",
+    "Cs",   "LhRh",   "LsrRsr", "Ch",
+    "Oh",   "LcRc",   "LwRw",   "LssRss",
+    "LFE2", "LhsRhs", "Chr",    "LhrRhr"
+};
+
+static char *make_spkr_mask_str(int mask)
+{
+    static char buf[128];
+
+    if (!mask)
+        return "???";
+
+    buf[0] = 0;
+    for (size_t i = 0; i < sizeof(spkr_pair_names) / sizeof(spkr_pair_names[0]); i++) {
+        if (mask & (1 << i)) {
+            if (buf[0])
+                strcat(buf, " ");
+            strcat(buf, spkr_pair_names[i]);
+        }
+    }
+
+    return buf;
+}
+
+static void print_info(struct dcadec_context *context, FILE *fp)
 {
     struct dcadec_exss_info *exss = dcadec_context_get_exss_info(context);
+
+    if (exss && exss->profile == DCADEC_PROFILE_DS) {
+        dcadec_context_free_exss_info(exss);
+        exss = NULL;
+    }
+
     if (exss) {
         if (exss->profile & DCADEC_PROFILE_HD_MA)
-            fprintf(stderr, "DTS-HD Master Audio");
+            fprintf(fp, "DTS-HD Master Audio");
         else if (exss->profile & DCADEC_PROFILE_HD_HRA)
-            fprintf(stderr, "DTS-HD High-Resolution Audio");
+            fprintf(fp, "DTS-HD High Resolution Audio");
         else if (exss->profile & DCADEC_PROFILE_DS_ES)
-            fprintf(stderr, "DTS-ES Discrete");
+            fprintf(fp, "DTS-ES Discrete");
         else if (exss->profile & DCADEC_PROFILE_DS_96_24)
-            fprintf(stderr, "DTS 96/24");
+            fprintf(fp, "DTS 96/24");
         else if (exss->profile & DCADEC_PROFILE_EXPRESS)
-            fprintf(stderr, "DTS Express");
+            fprintf(fp, "DTS Express");
         else
-            fprintf(stderr, "Unknown Extension Profile");
-        fprintf(stderr, ": %d ch, %.f kHz, %d bit\n",
-            exss->nchannels, exss->sample_rate / 1000.0f,
-            exss->bits_per_sample);
+            fprintf(fp, "Unknown Extension Profile");
+        fprintf(fp, ": %d ch (%s), %.f kHz, %d bit\n",
+            exss->nchannels, make_spkr_mask_str(exss->spkr_mask),
+            exss->sample_rate / 1000.0f, exss->bits_per_sample);
         dcadec_context_free_exss_info(exss);
     }
 
     struct dcadec_core_info *core = dcadec_context_get_core_info(context);
     if (core) {
         if (exss)
-            fprintf(stderr, "(");
-        fprintf(stderr, "DTS Core Audio: %d.%d ch, %.f kHz, %d bit",
+            fprintf(fp, "(");
+        fprintf(fp, "DTS Core Audio: %d.%d ch, %.f kHz, %d bit",
             core->nchannels, !!core->lfe_present, core->sample_rate / 1000.f,
             core->source_pcm_res);
         if (core->es_format)
-            fprintf(stderr, ", ES");
+            fprintf(fp, ", ES");
         if (core->bit_rate > 0)
-            fprintf(stderr, ", %.f kbps", core->bit_rate / 1000.0f);
+            fprintf(fp, ", %.f kbps", core->bit_rate / 1000.0f);
         if (exss)
-            fprintf(stderr, ")");
-        fprintf(stderr, "\n");
+            fprintf(fp, ")");
+        fprintf(fp, "\n");
         dcadec_context_free_core_info(core);
     }
 }
@@ -138,16 +179,39 @@ static void signal_handler(int sig)
 }
 #endif
 
+static void my_log_cb(int level, const char *file, int line,
+                      const char *message, void *cbarg)
+{
+    (void)cbarg;
+
+    if (level > DCADEC_LOG_WARNING)
+        return;
+
+    const char *prefix = "UNKNOWN";
+
+    switch (level) {
+    case DCADEC_LOG_ERROR:
+        prefix = "ERROR";
+        break;
+    case DCADEC_LOG_WARNING:
+        prefix = "WARNING";
+        break;
+    }
+
+    fprintf(stderr, "%s: %s+%d: %s\n", prefix, file, line, message);
+}
+
 int main(int argc, char **argv)
 {
     int flags = DCADEC_FLAG_STRICT;
+    int wave_flags = 0;
     bool parse_only = false;
     bool no_progress = false;
     bool quiet = false;
     bool no_strip = false;
 
     int opt;
-    while ((opt = getopt(argc, argv, "26bcfhlnPqSsx")) != -1) {
+    while ((opt = getopt(argc, argv, "26bcfhilmnPqSsx")) != -1) {
         switch (opt) {
         case '2':
             flags |= DCADEC_FLAG_KEEP_DMIX_2CH;
@@ -162,13 +226,22 @@ int main(int argc, char **argv)
             flags |= DCADEC_FLAG_CORE_ONLY;
             break;
         case 'f':
+            flags &= ~DCADEC_FLAG_CORE_LFE_IIR;
             flags |= DCADEC_FLAG_CORE_LFE_FIR;
             break;
         case 'h':
             print_help(argv[0]);
             return 0;
+        case 'i':
+            flags &= ~DCADEC_FLAG_CORE_LFE_FIR;
+            flags |= DCADEC_FLAG_CORE_LFE_IIR;
+            break;
         case 'l':
             flags &= ~DCADEC_FLAG_STRICT;
+            break;
+        case 'm':
+            flags |= DCADEC_FLAG_NATIVE_LAYOUT;
+            wave_flags |= DCADEC_WAVEOUT_FLAG_MONO;
             break;
         case 'n':
             parse_only = true;
@@ -181,9 +254,6 @@ int main(int argc, char **argv)
             break;
         case 'S':
             no_strip = true;
-            break;
-        case 's':
-            flags |= DCADEC_FLAG_CORE_SOURCE_PCM_RES;
             break;
         case 'x':
             flags |= DCADEC_FLAG_CORE_SYNTH_X96;
@@ -202,7 +272,7 @@ int main(int argc, char **argv)
     }
 
     char *fn = argv[optind];
-    struct dcadec_stream *stream = dcadec_stream_open(strcmp(fn, "-") ? fn : NULL);
+    struct dcadec_stream *stream = dcadec_stream_open(strcmp(fn, "-") ? fn : NULL, 0);
     if (!stream) {
         fprintf(stderr, "Couldn't open input file\n");
         return 1;
@@ -219,7 +289,7 @@ int main(int argc, char **argv)
     }
 
     if (ret == 0) {
-        fprintf(stderr, "This doesn't look like a 16-bit DTS bit stream\n");
+        fprintf(stderr, "This doesn't look like a valid DTS bit stream\n");
         dcadec_stream_close(stream);
         return 1;
     }
@@ -231,6 +301,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    dcadec_context_set_log_cb(context, my_log_cb, NULL);
+
     if ((ret = dcadec_context_parse(context, packet, size)) < 0) {
         fprintf(stderr, "Error parsing packet: %s\n", dcadec_strerror(ret));
         dcadec_context_destroy(context);
@@ -238,8 +310,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    if (ret > 0)
+        fprintf(stderr, "WARNING: %s at frame 0\n", dcadec_strerror(ret));
+
     if (!quiet)
-        print_info(context);
+        print_info(context, optind + 1 >= argc ? stdout : stderr);
 
     struct dcadec_waveout *waveout = NULL;
     if (!parse_only) {
@@ -250,7 +325,7 @@ int main(int argc, char **argv)
         }
 
         fn = argv[optind + 1];
-        waveout = dcadec_waveout_open(strcmp(fn, "-") ? fn : NULL);
+        waveout = dcadec_waveout_open(strcmp(fn, "-") ? fn : NULL, wave_flags);
         if (!waveout) {
             fprintf(stderr, "Couldn't open output file\n");
             dcadec_context_destroy(context);
@@ -270,6 +345,9 @@ int main(int argc, char **argv)
 
     uint32_t ndelayframes = 0;
     uint64_t npcmsamples = UINT64_MAX;
+    uint64_t ntotalframes = 0;
+    uint64_t nskippedframes = 0;
+    uint64_t nlossyframes = 0;
 
     if (!parse_only && !no_strip) {
         struct dcadec_stream_info *info = dcadec_stream_get_info(stream);
@@ -283,17 +361,10 @@ int main(int argc, char **argv)
     }
 
     if (!quiet) {
-        if (waveout) {
-            if (flags & DCADEC_FLAG_CORE_ONLY)
-                fprintf(stderr, "Decoding (core only)...\n");
-            else
-                fprintf(stderr, "Decoding...\n");
-        } else {
-            if (flags & DCADEC_FLAG_CORE_ONLY)
-                fprintf(stderr, "Parsing (core only)...\n");
-            else
-                fprintf(stderr, "Parsing...\n");
-        }
+        const bool core_only = (flags & DCADEC_FLAG_CORE_ONLY);
+        fprintf(stderr, "%s%s...\n",
+                waveout ? "Decoding" : "Parsing",
+                core_only ? " (core only)" : "");
     }
 
     while (!interrupted) {
@@ -303,10 +374,12 @@ int main(int argc, char **argv)
                                              &channel_mask, &sample_rate,
                                              &bits_per_sample, NULL)) < 0) {
                 fprintf(stderr, "Error filtering frame: %s\n", dcadec_strerror(ret));
-                if (flags & DCADEC_FLAG_STRICT)
+                if (flags & DCADEC_FLAG_STRICT) {
                     break;
-                else
+                } else {
+                    nskippedframes++;
                     goto next_packet;
+                }
             }
 
             if (ndelayframes) {
@@ -314,21 +387,32 @@ int main(int argc, char **argv)
                 goto next_packet;
             }
 
+            if (ret > 0) {
+                fprintf(stderr, "WARNING: %s at frame %" PRIu64 "\n", dcadec_strerror(ret), ntotalframes);
+                nlossyframes++;
+            }
+
             if ((uint64_t)nsamples > npcmsamples)
-                nsamples = npcmsamples;
+                nsamples = (int)npcmsamples;
 
             if ((ret = dcadec_waveout_write(waveout, samples, nsamples,
                                             channel_mask, sample_rate,
                                             bits_per_sample)) < 0) {
                 fprintf(stderr, "Error writing WAV file: %s\n", dcadec_strerror(ret));
-                if ((flags & DCADEC_FLAG_STRICT) || ret == -DCADEC_EIO)
+                if ((flags & DCADEC_FLAG_STRICT) || ret != -DCADEC_EOUTCHG) {
                     break;
+                } else {
+                    nskippedframes++;
+                    goto next_packet;
+                }
             }
 
             npcmsamples -= nsamples;
         }
 
 next_packet:
+        ntotalframes++;
+
         if ((ret = dcadec_stream_read(stream, &packet, &size)) < 0) {
             fprintf(stderr, "Error reading packet: %s\n", dcadec_strerror(ret));
             break;
@@ -347,11 +431,16 @@ next_packet:
 
         if ((ret = dcadec_context_parse(context, packet, size)) < 0) {
             fprintf(stderr, "Error parsing packet: %s\n", dcadec_strerror(ret));
-            if (flags & DCADEC_FLAG_STRICT)
+            if (flags & DCADEC_FLAG_STRICT) {
                 break;
-            else
+            } else {
+                nskippedframes++;
                 goto next_packet;
+            }
         }
+
+        if (ret > 0)
+            fprintf(stderr, "WARNING: %s at frame %" PRIu64 "\n", dcadec_strerror(ret), ntotalframes);
     }
 
     if (!quiet) {
@@ -361,6 +450,10 @@ next_packet:
             fprintf(stderr, "Interrupted.\n");
         else if (ret == 0)
             fprintf(stderr, "Completed.\n");
+        if (nskippedframes)
+            fprintf(stderr, "*** %" PRIu64 " frames skipped ***\n", nskippedframes);
+        if (nlossyframes)
+            fprintf(stderr, "*** %" PRIu64 " frames not lossless ***\n", nlossyframes);
     }
 
     dcadec_waveout_close(waveout);

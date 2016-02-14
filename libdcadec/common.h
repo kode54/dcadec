@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <string.h>
 #ifdef _MSC_VER
 #define _USE_MATH_DEFINES
@@ -30,38 +31,55 @@
 #include <math.h>
 #include <errno.h>
 #include <assert.h>
+#include <limits.h>
 
+#include "compiler.h"
 #include "dca_context.h"
 #include "ta.h"
 
-#define DCADEC_FLAG_KEEP_DMIX_MASK  \
-    (DCADEC_FLAG_KEEP_DMIX_2CH | DCADEC_FLAG_KEEP_DMIX_6CH)
-
-#ifdef NDEBUG
-#define DCA_DEBUG(m)
+#if AT_LEAST_GCC(3, 4)
+#define dca_clz(x)  __builtin_clz(x)
 #else
-#define DCA_DEBUG(m) \
-    fprintf(stderr, "%s+%d: %s\n", __FILE__, __LINE__, m)
+static inline int dca_clz(uint32_t x)
+{
+    int r = 0;
+
+    assert(x);
+    if (x & 0xffff0000) { x >>= 16; r |= 16; }
+    if (x & 0x0000ff00) { x >>=  8; r |=  8; }
+    if (x & 0x000000f0) { x >>=  4; r |=  4; }
+    if (x & 0x0000000c) { x >>=  2; r |=  2; }
+    if (x & 0x00000002) { x >>=  1; r |=  1; }
+
+    return 31 - r;
+}
 #endif
 
-#define enforce(x, m) \
-    do {                                \
-        if (!(x)) {                     \
-            DCA_DEBUG(m);               \
-            return -DCADEC_EBADDATA;    \
-        }                               \
-    } while (false)
+#if (defined __GNUC__) && (defined __POPCNT__)
+#define dca_popcount(x) __builtin_popcount(x)
+#else
+static inline int dca_popcount(uint32_t x)
+{
+    x -= (x >> 1) & 0x55555555;
+    x = (x & 0x33333333) + ((x >> 2) & 0x33333333);
+    x = (x + (x >> 4)) & 0x0f0f0f0f;
+    x += x >> 8;
+    return (x + (x >> 16)) & 0x3f;
+}
+#endif
 
-#define require(x, m) \
-    do {                            \
-        if (!(x)) {                 \
-            DCA_DEBUG(m);           \
-            return -DCADEC_ENOSUP;  \
-        }                           \
-    } while (false)
+#define dca_countof(x)  (sizeof(x) / sizeof((x)[0]))
 
-#ifdef __GNUC__
+#if AT_LEAST_GCC(4, 8)
 #define dca_bswap16(x)  __builtin_bswap16(x)
+#else
+static inline uint16_t dca_bswap16(uint16_t x)
+{
+    return (x << 8) | (x >> 8);
+}
+#endif
+
+#if AT_LEAST_GCC(4, 3)
 #define dca_bswap32(x)  __builtin_bswap32(x)
 #define dca_bswap64(x)  __builtin_bswap64(x)
 #define dca_clz32(x)    __builtin_clz(x)
@@ -128,25 +146,25 @@ static __inline uint32_t dca_popcount(uint32_t i)
 #define inline __inline
 #define restrict __restrict
 #else
-#error Unsupported compiler
+static inline uint32_t dca_bswap32(uint32_t x)
+{
+    x = ((x & 0x00ff00ff) << 8) | ((x & 0xff00ff00) >> 8);
+    return (x << 16) | (x >> 16);
+}
+
+static inline uint64_t dca_bswap64(uint64_t x)
+{
+    x = ((x & 0x00ff00ff00ff00ff) <<  8) | ((x & 0xff00ff00ff00ff00) >>  8);
+    x = ((x & 0x0000ffff0000ffff) << 16) | ((x & 0xffff0000ffff0000) >> 16);
+    return (x << 32) | (x >> 32);
+}
 #endif
 
-#define dca_bswap32_const(x) \
-	(((uint32_t)(x) >> 24) | \
-	(((uint32_t)(x) >> 8) & 0xFF00) | \
-	(((uint32_t)(x) << 8) & 0xFF0000) | \
-	(((uint32_t)(x) << 24) & 0xFF000000))
-#define dca_countof(x)  (sizeof(x) / sizeof((x)[0]))
+#define DCA_BSWAP16_C(x)    ((((x) & 0x00ff)   <<  8) | (((x) & 0xff00)  >>  8))
+#define DCA_BSWAP32_C(x)    ((DCA_BSWAP16_C(x) << 16) | (DCA_BSWAP16_C(x >> 16)))
+#define DCA_BSWAP64_C(x)    ((DCA_BSWAP32_C(x) << 32) | (DCA_BSWAP32_C(x >> 32)))
 
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-#define DCA_16LE(x) ((uint16_t)(x))
-#define DCA_32LE(x) ((uint32_t)(x))
-#define DCA_64LE(x) ((uint64_t)(x))
-#define DCA_16BE(x) dca_bswap16(x)
-#define DCA_32BE(x) dca_bswap32(x)
-#define DCA_32BE_const(x) dca_bswap32_const(x)
-#define DCA_64BE(x) dca_bswap64(x)
-#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#if HAVE_BIGENDIAN
 #define DCA_16LE(x) dca_bswap16(x)
 #define DCA_32LE(x) dca_bswap32(x)
 #define DCA_64LE(x) dca_bswap64(x)
@@ -154,19 +172,32 @@ static __inline uint32_t dca_popcount(uint32_t i)
 #define DCA_32BE(x) ((uint32_t)(x))
 #define DCA_32BE_const(x) ((uint32_t)(x))
 #define DCA_64BE(x) ((uint64_t)(x))
+#define DCA_16LE_C(x)   DCA_BSWAP16_C(x)
+#define DCA_32LE_C(x)   DCA_BSWAP32_C(x)
+#define DCA_64LE_C(x)   DCA_BSWAP64_C(x)
+#define DCA_16BE_C(x)   (x)
+#define DCA_32BE_C(x)   (x)
+#define DCA_64BE_C(x)   (x)
 #else
-#error Unsupported byte order
+#define DCA_16LE(x) ((uint16_t)(x))
+#define DCA_32LE(x) ((uint32_t)(x))
+#define DCA_64LE(x) ((uint64_t)(x))
+#define DCA_16BE(x) dca_bswap16(x)
+#define DCA_32BE(x) dca_bswap32(x)
+#define DCA_64BE(x) dca_bswap64(x)
+#define DCA_16LE_C(x)   (x)
+#define DCA_32LE_C(x)   (x)
+#define DCA_64LE_C(x)   (x)
+#define DCA_16BE_C(x)   DCA_BSWAP16_C(x)
+#define DCA_32BE_C(x)   DCA_BSWAP32_C(x)
+#define DCA_64BE_C(x)   DCA_BSWAP64_C(x)
 #endif
 
-#define DCA_MAX(a, b) \
-    ({ typeof(a) _a = (a); \
-       typeof(b) _b = (b); \
-       _a > _b ? _a : _b; })
+#define DCA_MIN(a, b)   ((a) < (b) ? (a) : (b))
+#define DCA_MAX(a, b)   ((a) > (b) ? (a) : (b))
 
-#define DCA_MIN(a, b) \
-    ({ typeof(a) _a = (a); \
-       typeof(b) _b = (b); \
-       _a < _b ? _a : _b; })
+#define DCA_ALIGN(value, align) \
+    (((value) + (align) - 1) & ~((align) - 1))
 
 #define DCA_MEM16BE(data) \
     (((uint32_t)(data)[0] <<  8) | (data)[1])
@@ -180,22 +211,45 @@ static __inline uint32_t dca_popcount(uint32_t i)
 #define DCA_MEM40BE(data) \
     (((uint64_t)(data)[0] << 32) | DCA_MEM32BE(&(data)[1]))
 
-#define DCA_MEM32NE(data) \
-    ({ uint32_t _res; memcpy(&_res, data, sizeof(_res)); _res; })
-
-static inline int dca_realloc(void *parent, void *ptr, size_t nmemb, size_t size)
+static inline uint32_t DCA_MEM32NE(const void *data)
 {
-    void **_ptr = (void **) ptr;
-    size_t old_size = ta_get_size(*_ptr);
-    size_t new_size = ta_calc_array_size(size, nmemb);
-    if (old_size < new_size) {
-        ta_free(*_ptr);
-        if (!(*_ptr = ta_zalloc_size(parent, new_size)))
-            return -DCADEC_ENOMEM;
-        return 1;
-    }
-    return 0;
+    uint32_t res;
+    memcpy(&res, data, sizeof(res));
+    return res;
 }
+
+void dca_format_log(struct dcadec_context *dca, int level,
+                    const char *file, int line, const char *fmt, ...)
+    __attribute__((format(printf, 5, 6)));
+
+#define DCADEC_LOG_ONCE     0x80000000
+
+#define dca_log(obj, lvl, ...) \
+    dca_format_log((obj)->ctx, DCADEC_LOG_##lvl, __FILE__, __LINE__, __VA_ARGS__)
+
+#define dca_log_once(obj, lvl, ...) \
+    dca_format_log((obj)->ctx, DCADEC_LOG_##lvl | DCADEC_LOG_ONCE, __FILE__, __LINE__, __VA_ARGS__)
+
+#define DCADEC_FLAG_KEEP_DMIX_MASK  \
+    (DCADEC_FLAG_KEEP_DMIX_2CH | DCADEC_FLAG_KEEP_DMIX_6CH)
+
+#define SPEAKER_LAYOUT_MONO         (SPEAKER_MASK_C)
+#define SPEAKER_LAYOUT_STEREO       (SPEAKER_MASK_L | SPEAKER_MASK_R)
+#define SPEAKER_LAYOUT_2POINT1      (SPEAKER_LAYOUT_STEREO | SPEAKER_MASK_LFE1)
+#define SPEAKER_LAYOUT_3_0          (SPEAKER_LAYOUT_STEREO | SPEAKER_MASK_C)
+#define SPEAKER_LAYOUT_2_1          (SPEAKER_LAYOUT_STEREO | SPEAKER_MASK_Cs)
+#define SPEAKER_LAYOUT_3_1          (SPEAKER_LAYOUT_3_0 | SPEAKER_MASK_Cs)
+#define SPEAKER_LAYOUT_2_2          (SPEAKER_LAYOUT_STEREO | SPEAKER_MASK_Ls | SPEAKER_MASK_Rs)
+#define SPEAKER_LAYOUT_5POINT0      (SPEAKER_LAYOUT_3_0 | SPEAKER_MASK_Ls | SPEAKER_MASK_Rs)
+#define SPEAKER_LAYOUT_7POINT0_WIDE (SPEAKER_LAYOUT_5POINT0 | SPEAKER_MASK_Lw | SPEAKER_MASK_Rw)
+#define SPEAKER_LAYOUT_7POINT1_WIDE (SPEAKER_LAYOUT_7POINT0_WIDE | SPEAKER_MASK_LFE1)
+
+enum WaveTag {
+    TAG_RIFF    = 0x46464952,
+    TAG_WAVE    = 0x45564157,
+    TAG_data    = 0x61746164,
+    TAG_fmt     = 0x20746d66
+};
 
 // WAVEFORMATEXTENSIBLE speakers
 enum WaveSpeaker {
@@ -262,6 +316,8 @@ enum Speaker {
 enum SyncWord {
     SYNC_WORD_CORE      = 0x7ffe8001,
     SYNC_WORD_CORE_LE   = 0xfe7f0180,
+    SYNC_WORD_CORE_LE14 = 0xff1f00e8,
+    SYNC_WORD_CORE_BE14 = 0x1fffe800,
     SYNC_WORD_REV1AUX   = 0x9a1105a0,
     SYNC_WORD_REV2AUX   = 0x7004c070,
     SYNC_WORD_XCH       = 0x5a5a5a5a,
@@ -295,6 +351,12 @@ enum SpeakerPair {
     SPEAKER_PAIR_LhrRhr = 0x8000,
     SPEAKER_PAIR_ALL_1  = 0x5199,
     SPEAKER_PAIR_ALL_2  = 0xae66
+};
+
+// Table 7-11: Representation type
+enum RepresentationType {
+    REPR_TYPE_LtRt  = 2,
+    REPR_TYPE_LhRh  = 3
 };
 
 // Table 7-15: Core/extension mask

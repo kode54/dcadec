@@ -24,28 +24,27 @@
 struct interpolator;
 struct idct_context;
 
-typedef void (*interpolate_lfe_t)(int *pcm_samples, int *lfe_samples,
-                                  int nsamples, bool dec_select,
-                                  bool synth_x96);
+typedef void (*interpolate_lfe_cb)(int *pcm_samples, int *lfe_samples,
+                                   int npcmblocks, bool dec_select);
 
-typedef void (*interpolate_sub_t)(struct interpolator *dsp, int *pcm_samples,
-                                  int **subband_samples_lo,
-                                  int **subband_samples_hi,
-                                  int nsamples, bool perfect);
+typedef void (*interpolate_sub_cb)(struct interpolator *dsp, int *pcm_samples,
+                                   int **subband_samples_lo,
+                                   int **subband_samples_hi,
+                                   int nsamples, bool perfect);
 
 struct interpolator {
     struct idct_context *idct;
     void *history;
-    interpolate_sub_t interpolate;
+    interpolate_sub_cb interpolate;
 };
 
-struct interpolator *interpolator_create(struct idct_context *parent, int flags);
-void interpolator_clear(struct interpolator *dsp);
+struct interpolator *interpolator_create(struct idct_context *parent, int flags)
+    __attribute__((cold));
+void interpolator_clear(struct interpolator *dsp) __attribute__((cold));
 
 #define INTERPOLATE_LFE(x) \
     void interpolate_##x(int *pcm_samples, int *lfe_samples, \
-                         int nsamples, bool dec_select, \
-                         bool synth_x96)
+                         int npcmblocks, bool dec_select)
 
 #define INTERPOLATE_SUB(x) \
     void interpolate_##x(struct interpolator *dsp, int *pcm_samples, \
@@ -54,6 +53,7 @@ void interpolator_clear(struct interpolator *dsp);
                          int nsamples, bool perfect)
 
 INTERPOLATE_LFE(lfe_float_fir);
+INTERPOLATE_LFE(lfe_float_fir_2x);
 INTERPOLATE_LFE(lfe_float_iir);
 INTERPOLATE_SUB(sub32_float);
 INTERPOLATE_SUB(sub64_float);

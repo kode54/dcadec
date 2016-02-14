@@ -6,25 +6,26 @@ dcadec is a free DTS Coherent Acoustics decoder with support for HD extensions.
 Supported features:
 
 * Decoding of standard DTS core streams with up to 5.1 channels
-* Decoding of DTS-ES 6.x streams with discrete back channel
-* Decoding of High-Resolution streams with up to 7.1 channels and extended bitrate
+* Decoding of DTS-ES streams with discrete back channel
+* Decoding of High Resolution streams with up to 7.1 channels and extended bitrate
 * Decoding of 96/24 core streams
-* Lossless decoding of Master Audio streams with up to 7.1 channels
+* Lossless decoding of Master Audio streams with up to 7.1 channels, 192 kHz
 * Downmixing to stereo and 5.1 using embedded coefficients
 
 Features not implemented:
 
 * Decoding of DTS Express streams
+* Applying dynamic range compression and dialog normalization
 
 Usage
 -----
 
 Help screen of the program is reproduced below.
 ```
-Usage: ./dcadec [-26bcfhlnPqSsx] <input.dts> [output.wav]
+Usage: ./dcadec [-26bcfhlmnPqSx] <input.dts> [output.wav]
 dcadec is a free DTS Coherent Acoustics decoder. Supported options:
 
--2  Extract embedded 2.0 downmix.
+-2  Extract embedded 2.0 downmix if present, otherwise extract 5.1 downmix.
 
 -6  Extract embedded 5.1 downmix.
 
@@ -37,9 +38,15 @@ dcadec is a free DTS Coherent Acoustics decoder. Supported options:
 
 -h  Show this help message.
 
--l  Enable lenient decoding mode. Attempt to recover from errors.
+-i  Use IIR filter for floating point DTS core LFE channel interpolation.
 
--n  No-act mode. Parse DTS bitstream without writing WAV file.
+-l  Enable lenient decoding mode. Attempt to recover from errors by skipping
+    non-decodable parts of the stream.
+
+-m  Write a mono WAV file for each native DTS channel. Output file name must
+    include `%s' sub-string that will be replaced with DTS channel name.
+
+-n  No-act mode. Parse DTS bitstream without writing WAV file(s).
 
 -P  Disable progress indicator.
 
@@ -47,9 +54,6 @@ dcadec is a free DTS Coherent Acoustics decoder. Supported options:
     and errors are still printed.
 
 -S  Don't strip padding samples for streams within DTS-HD container.
-
--s  Force bit width reduction of DTS core from 24 bit to source PCM resolution.
-    Developer option, degrades sound quality.
 
 -x  Force use of X96 synthesis filter for DTS core interpolation. Developer
     option, degrades sound quality.
@@ -74,6 +78,12 @@ Some dcadec usage examples follow.
 
   ```
   $ ./dcadec input.dts output.wav
+  ```
+
+* Decode DTS file to multiple mono WAVs:  
+
+  ```
+  $ ./dcadec -m input.dts output_%s.wav
   ```
 
 * Decode DTS file and play with mpv:  

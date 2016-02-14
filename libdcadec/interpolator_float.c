@@ -36,38 +36,65 @@ static inline int convert(double a)
     return clip23(lrint(a));
 }
 
-INTERPOLATE_LFE(lfe_float_fir)
+static void interpolate_lfe(int *pcm_samples, int *lfe_samples, int npcmblocks,
+                            const double *filter_coeff, bool dec_select)
 {
-    // Select decimation filter
-    int dec_factor              = dec_select ? 128 : 64;
-    const double *filter_coeff  = dec_select ? lfe_fir_128 : lfe_fir_64;
+    // Select decimation factor
+    int factor = 64 << dec_select;
+    int ncoeffs = 8 >> dec_select;
+    int nlfesamples = npcmblocks >> (dec_select + 1);
 
     // Interpolation
-    for (int i = 0; i < nsamples; i++) {
+    for (int i = 0; i < nlfesamples; i++) {
+        int *src = lfe_samples + MAX_LFE_HISTORY + i;
+
         // One decimated sample generates 64 or 128 interpolated ones
-        for (int j = 0; j < dec_factor; j++) {
+        for (int j = 0; j < factor / 2; j++) {
             // Clear accumulation
-            double res = 0.0;
+            double res1 = 0.0;
+            double res2 = 0.0;
 
             // Accumulate
-            for (int k = 0; k < 512 / dec_factor; k++)
-                res += lfe_samples[MAX_LFE_HISTORY + i - k] *
-                    filter_coeff[k * dec_factor + j];
+            for (int k = 0; k < ncoeffs; k++) {
+                res1 += filter_coeff[      j * ncoeffs + k] * src[-k];
+                res2 += filter_coeff[255 - j * ncoeffs - k] * src[-k];
+            }
 
             // Save interpolated samples
-            pcm_samples[(i * dec_factor + j) << synth_x96] = convert(res);
+            pcm_samples[             j] = convert(res1);
+            pcm_samples[factor / 2 + j] = convert(res2);
         }
+
+        // Advance output pointer
+        pcm_samples += factor;
     }
 
     // Update history
-    for (int n = MAX_LFE_HISTORY - 1; n >= 0; n--)
-        lfe_samples[n] = lfe_samples[nsamples + n];
+    for (int n = MAX_LFE_HISTORY - 1; n >= MAX_LFE_HISTORY - 8; n--)
+        lfe_samples[n] = lfe_samples[nlfesamples + n];
+}
+
+INTERPOLATE_LFE(lfe_float_fir)
+{
+    (void)dec_select;
+    assert(!dec_select);
+
+    interpolate_lfe(pcm_samples, lfe_samples, npcmblocks, lfe_fir_64, false);
+}
+
+INTERPOLATE_LFE(lfe_float_fir_2x)
+{
+    (void)dec_select;
+    assert(dec_select);
+
+    interpolate_lfe(pcm_samples, lfe_samples, npcmblocks, lfe_fir_128, true);
 }
 
 INTERPOLATE_LFE(lfe_float_iir)
 {
     // Select decimation factor
-    int dec_factor = 64 << dec_select;
+    int factor = 64 << dec_select;
+    int nlfesamples = npcmblocks >> (dec_select + 1);
 
     // Load history
     double lfe_history[6];
@@ -75,12 +102,12 @@ INTERPOLATE_LFE(lfe_float_iir)
         lfe_history[i] = ((double *)lfe_samples)[i];
 
     // Interpolation
-    for (int i = 0; i < nsamples; i++) {
+    for (int i = 0; i < nlfesamples; i++) {
         double res1 = lfe_samples[MAX_LFE_HISTORY + i] * lfe_iir_scale;
         double res2;
 
         // One decimated sample generates 64 or 128 interpolated ones
-        for (int j = 0; j < dec_factor; j++) {
+        for (int j = 0; j < factor; j++) {
             // Filter
             for (int k = 0; k < 3; k++) {
                 double tmp1 = lfe_history[k * 2 + 0];
@@ -94,7 +121,7 @@ INTERPOLATE_LFE(lfe_float_iir)
             }
 
             // Save interpolated samples
-            pcm_samples[(i * dec_factor + j) << synth_x96] = convert(res1);
+            *pcm_samples++ = convert(res1);
             res1 = 0.0;
         }
     }
@@ -107,7 +134,7 @@ INTERPOLATE_LFE(lfe_float_iir)
 INTERPOLATE_SUB(sub32_float)
 {
     (void)subband_samples_hi;
-    assert(subband_samples_hi == NULL);
+    assert(!subband_samples_hi);
 
     // Get history pointer
     double *history = dsp->history;
@@ -135,33 +162,29 @@ INTERPOLATE_SUB(sub32_float)
         }
 
         // One subband sample generates 32 interpolated ones
-        for (i = 0; i < 16; i++) {
+        for (i = 0, k = 15; i < 16; i++, k--) {
             // Clear accumulation
-            double res = 0.0;
+            double res1 = 0.0;
+            double res2 = 0.0;
 
             // Accumulate
-            for (j =  0; j < 512; j += 64)
-                res += history[     i + j] * filter_coeff[i + j];
-            for (j = 32; j < 512; j += 64)
-                res += history[16 + i + j] * filter_coeff[i + j];
+            for (j = 0; j < 512; j += 64) {
+                res1 += history[i + j] * filter_coeff[     i + j];
+                res2 += history[k + j] * filter_coeff[16 + i + j];
+            }
+
+            for (j = 32; j < 512; j += 64) {
+                res1 += history[16 + i + j] * filter_coeff[     i + j];
+                res2 += history[16 + k + j] * filter_coeff[16 + i + j];
+            }
 
             // Save interpolated samples
-            pcm_samples[sample * 32 + i] = convert(res);
+            pcm_samples[     i] = convert(res1);
+            pcm_samples[16 + i] = convert(res2);
         }
 
-        for (i = 16, k = 15; i < 32; i++, k--) {
-            // Clear accumulation
-            double res = 0.0;
-
-            // Accumulate
-            for (j =  0; j < 512; j += 64)
-                res += history[     k + j] * filter_coeff[i + j];
-            for (j = 32; j < 512; j += 64)
-                res += history[16 + k + j] * filter_coeff[i + j];
-
-            // Save interpolated samples
-            pcm_samples[sample * 32 + i] = convert(res);
-        }
+        // Advance output pointer
+        pcm_samples += 32;
 
         // Shift history
         for (i = 511; i >= 32; i--)
@@ -207,33 +230,29 @@ INTERPOLATE_SUB(sub64_float)
         }
 
         // One subband sample generates 64 interpolated ones
-        for (i = 0; i < 32; i++) {
+        for (i = 0, k = 31; i < 32; i++, k--) {
             // Clear accumulation
-            double res = 0.0;
+            double res1 = 0.0;
+            double res2 = 0.0;
 
             // Accumulate
-            for (j =  0; j < 1024; j += 128)
-                res += history[     i + j] * band_fir_x96[i + j];
-            for (j = 64; j < 1024; j += 128)
-                res += history[32 + i + j] * band_fir_x96[i + j];
+            for (j = 0; j < 1024; j += 128) {
+                res1 += history[i + j] * band_fir_x96[     i + j];
+                res2 += history[k + j] * band_fir_x96[32 + i + j];
+            }
+
+            for (j = 64; j < 1024; j += 128) {
+                res1 += history[32 + i + j] * band_fir_x96[     i + j];
+                res2 += history[32 + k + j] * band_fir_x96[32 + i + j];
+            }
 
             // Save interpolated samples
-            pcm_samples[sample * 64 + i] = convert(res);
+            pcm_samples[     i] = convert(res1);
+            pcm_samples[32 + i] = convert(res2);
         }
 
-        for (i = 32, k = 31; i < 64; i++, k--) {
-            // Clear accumulation
-            double res = 0.0;
-
-            // Accumulate
-            for (j =  0; j < 1024; j += 128)
-                res += history[     k + j] * band_fir_x96[i + j];
-            for (j = 64; j < 1024; j += 128)
-                res += history[32 + k + j] * band_fir_x96[i + j];
-
-            // Save interpolated samples
-            pcm_samples[sample * 64 + i] = convert(res);
-        }
+        // Advance output pointer
+        pcm_samples += 64;
 
         // Shift history
         for (i = 1023; i >= 64; i--)

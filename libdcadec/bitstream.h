@@ -26,68 +26,63 @@
 
 struct bitstream {
     uint32_t    *data;
-    size_t      total;
-    size_t      index;
+    int         total;
+    int         index;
 };
 
-void bits_init(struct bitstream *bits, uint8_t *data, size_t size);
+static inline void bits_init(struct bitstream *bits, uint8_t *data, int size)
+{
+    assert(data && !((uintptr_t)data & 3));
+    assert(size > 0 && size < INT_MAX / 8);
+    bits->data = (uint32_t *)data;
+    bits->total = size * 8;
+    bits->index = 0;
+}
+
 bool bits_get1(struct bitstream *bits);
 int bits_get(struct bitstream *bits, int n);
 int bits_get_signed(struct bitstream *bits, int n);
 int bits_get_signed_linear(struct bitstream *bits, int n);
-int bits_get_unsigned_rice(struct bitstream *bits, int k);
 int bits_get_signed_rice(struct bitstream *bits, int k);
 int bits_get_unsigned_vlc(struct bitstream *bits, const struct huffman *h);
 int bits_get_signed_vlc(struct bitstream *bits, const struct huffman *h);
-void bits_skip(struct bitstream *bits, int n);
-void bits_skip1(struct bitstream *bits);
-int bits_seek(struct bitstream *bits, size_t n);
-void bits_seek1(struct bitstream *bits);
-size_t bits_align1(struct bitstream *bits);
-size_t bits_align4(struct bitstream *bits);
-int bits_check_crc(struct bitstream *bits, size_t p1, size_t p2);
 
-static inline void bits_get_array(struct bitstream *bits,
-                                  int *array, int size, int n)
+static inline void bits_skip(struct bitstream *bits, int n)
 {
-    for (int i = 0; i < size; i++)
-        array[i] = bits_get(bits, n);
+    assert(n >= 0);
+    bits->index += n;
 }
 
-static inline void bits_get_signed_array(struct bitstream *bits,
-                                         int *array, int size, int n)
+static inline void bits_skip1(struct bitstream *bits)
 {
-    for (int i = 0; i < size; i++)
-        array[i] = bits_get_signed(bits, n);
+    bits->index++;
 }
 
-static inline void bits_get_signed_linear_array(struct bitstream *bits,
-                                                int *array, int size, int n)
+static inline int bits_seek(struct bitstream *bits, int n)
 {
-    if (n == 0) {
-        memset(array, 0, sizeof(*array) * size);
-    } else for (int i = 0; i < size; i++) {
-        int v = bits_get(bits, n);
-        array[i] = (v >> 1) ^ -(v & 1);
-    }
-}
-
-static inline void bits_get_signed_rice_array(struct bitstream *bits,
-                                              int *array, int size, int k)
-{
-    for (int i = 0; i < size; i++)
-        array[i] = bits_get_signed_rice(bits, k);
-}
-
-static inline int bits_get_signed_vlc_array(struct bitstream *bits,
-                                            int *array, int size,
-                                            const struct huffman *h)
-{
-    for (int i = 0; i < size; i++) {
-        if ((array[i] = bits_get_signed_vlc(bits, h)) == BITS_INVALID_VLC_SI)
-            return -DCADEC_EBADDATA;
-    }
+    if (n < bits->index || n > bits->total)
+        return -DCADEC_EBADREAD;
+    bits->index = n;
     return 0;
 }
+
+static inline int bits_align1(struct bitstream *bits)
+{
+    bits->index = DCA_ALIGN(bits->index, 8);
+    return bits->index;
+}
+
+static inline int bits_align4(struct bitstream *bits)
+{
+    bits->index = DCA_ALIGN(bits->index, 32);
+    return bits->index;
+}
+
+int bits_check_crc(struct bitstream *bits, int p1, int p2);
+void bits_get_array(struct bitstream *bits, int *array, int size, int n);
+void bits_get_signed_array(struct bitstream *bits, int *array, int size, int n);
+void bits_get_signed_linear_array(struct bitstream *bits, int *array, int size, int n);
+void bits_get_signed_rice_array(struct bitstream *bits, int *array, int size, int k);
+int bits_get_signed_vlc_array(struct bitstream *bits, int *array, int size, const struct huffman *h);
 
 #endif

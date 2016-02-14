@@ -1,4 +1,8 @@
-VERSION = 0.0.0
+VERSION = 0.2.0
+
+API_MAJOR = 0
+API_MINOR = 1
+API_PATCH = 0
 
 CFLAGS := -std=gnu99 -D_FILE_OFFSET_BITS=64 -Wall -Wextra -O3 -ffast-math -g -MMD $(CFLAGS)
 
@@ -6,11 +10,17 @@ PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 LIBDIR ?= $(PREFIX)/lib
 INCLUDEDIR ?= $(PREFIX)/include
-PKG_CONFIG_PATH ?= $(LIBDIR)/pkgconfig
+
+SRC_DIR := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))
+vpath %.c $(SRC_DIR)
+vpath %.h $(SRC_DIR)
+vpath %.pc.in $(SRC_DIR)
 
 -include .config
 
-ifdef CONFIG_NDEBUG
+ifdef CONFIG_DEBUG
+    CFLAGS += -D_DEBUG
+else
     CFLAGS += -DNDEBUG
 endif
 
@@ -18,22 +28,29 @@ ifdef CONFIG_WINDOWS
     EXESUF ?= .exe
     DLLSUF ?= .dll
     LIBSUF ?= .a
-    LIBS ?=
 else
-    EXESUF ?=
     DLLSUF ?= .so
     LIBSUF ?= .a
     LIBS ?= -lm
+    ifdef CONFIG_SHARED
+        SONAMESUF ?= .$(API_MAJOR).$(API_MINOR).$(API_PATCH)
+        SONAMESUF_MAJOR ?= .$(API_MAJOR)
+        SONAME ?= libdcadec$(DLLSUF)$(SONAMESUF_MAJOR)
+    endif
 endif
 
 ifdef CONFIG_SHARED
-    OUT_LIB ?= libdcadec/libdcadec$(DLLSUF)
+    OUT_LIB ?= libdcadec/libdcadec$(DLLSUF)$(SONAMESUF)
 else
     OUT_LIB ?= libdcadec/libdcadec$(LIBSUF)
 endif
 
 OUT_DEC ?= dcadec$(EXESUF)
 OUT_CUT ?= dcacut$(EXESUF)
+
+OUT_DEV ?= test/stddev$(EXESUF)
+SRC_DEV ?= test/stddev.c
+CFLAGS_DEV ?= -O2 -Wall -Wextra
 
 SRC_LIB = \
 libdcadec/bitstream.c \
@@ -52,8 +69,10 @@ INC_LIB = \
 libdcadec/dca_context.h
 
 ifndef CONFIG_SMALL
+SRC_LIB += libdcadec/dca_frame.c
 SRC_LIB += libdcadec/dca_stream.c
 SRC_LIB += libdcadec/dca_waveout.c
+INC_LIB += libdcadec/dca_frame.h
 INC_LIB += libdcadec/dca_stream.h
 INC_LIB += libdcadec/dca_waveout.h
 endif
@@ -71,9 +90,18 @@ DEP_CUT = $(SRC_CUT:.c=.d)
 
 default: $(OUT_LIB) $(OUT_DEC)
 
+lib: $(OUT_LIB)
+
 all: $(OUT_LIB) $(OUT_DEC) $(OUT_CUT)
 
 -include $(DEP_LIB) $(DEP_DEC) $(DEP_CUT)
+
+$(OBJ_LIB): | objdir
+$(OBJ_DEC): | objdir
+$(OBJ_CUT): | objdir
+
+objdir:
+	mkdir -p libdcadec
 
 ifdef CONFIG_SHARED
     CFLAGS_DLL = $(CFLAGS) -DDCADEC_SHARED -DDCADEC_INTERNAL
@@ -89,6 +117,11 @@ ifdef CONFIG_SHARED
         LDFLAGS_DLL += -Wl,--out-implib,$(IMP_LIB)
     else
         CFLAGS_DLL += -fPIC -fvisibility=hidden
+        ifdef SONAME
+            LDFLAGS_DLL += -Wl,-soname,$(SONAME)
+            EXTRA_LIB += libdcadec/libdcadec$(DLLSUF)
+            EXTRA_LIB += libdcadec/libdcadec$(DLLSUF)$(SONAMESUF_MAJOR)
+        endif
         IMP_LIB = -Llibdcadec -ldcadec
     endif
 
@@ -97,6 +130,10 @@ libdcadec/%.o: libdcadec/%.c
 
 $(OUT_LIB): $(OBJ_LIB)
 	$(CC) $(LDFLAGS_DLL) -o $@ $(OBJ_LIB) $(LIBS)
+ifdef SONAME
+	ln -sf $(@F) libdcadec/libdcadec$(DLLSUF)
+	ln -sf $(@F) libdcadec/libdcadec$(DLLSUF)$(SONAMESUF_MAJOR)
+endif
 
 $(OUT_DEC): $(OBJ_DEC) $(OUT_LIB)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ_DEC) $(IMP_LIB) $(LIBS)
@@ -117,19 +154,36 @@ $(OUT_CUT): $(OBJ_CUT) $(OUT_LIB)
 
 endif
 
+$(OUT_DEV): $(SRC_DEV)
+	$(CC) $(LDFLAGS) -o $@ $(CFLAGS_DEV) $< $(LIBS)
+
+check: $(OUT_DEC) $(OUT_DEV)
+	cd test && ./test.sh
+
 clean:
 	$(RM) $(OUT_LIB) $(OBJ_LIB) $(DEP_LIB) $(EXTRA_LIB)
 	$(RM) $(OUT_DEC) $(OBJ_DEC) $(DEP_DEC)
 	$(RM) $(OUT_CUT) $(OBJ_CUT) $(DEP_CUT)
 	$(RM) dcadec.pc
+	$(RM) $(OUT_DEV)
+	$(RM) -r test/decoded
 
 .PHONY: dcadec.pc
 dcadec.pc: dcadec.pc.in
 	sed 's,%PREFIX%,$(PREFIX),;s,%LIBDIR%,$(LIBDIR),;s,%INCLUDEDIR%,$(INCLUDEDIR),;s,%VERSION%,$(VERSION),' $< > $@
 
-install: $(OUT_LIB) $(OUT_DEC) dcadec.pc
-	install -d -m 755 $(DESTDIR)$(LIBDIR) $(DESTDIR)$(PKG_CONFIG_PATH) $(DESTDIR)$(INCLUDEDIR)/libdcadec $(DESTDIR)$(BINDIR)
+install-lib: $(OUT_LIB) dcadec.pc
+	install -d -m 755 $(DESTDIR)$(LIBDIR) $(DESTDIR)$(LIBDIR)/pkgconfig $(DESTDIR)$(INCLUDEDIR)/libdcadec
 	install -m 644 $(OUT_LIB) $(DESTDIR)$(LIBDIR)
-	install -m 644 $(INC_LIB) $(DESTDIR)$(INCLUDEDIR)/libdcadec
-	install -m 644 dcadec.pc $(DESTDIR)$(PKG_CONFIG_PATH)
+	install -m 644 $(addprefix $(SRC_DIR)/, $(INC_LIB)) $(DESTDIR)$(INCLUDEDIR)/libdcadec
+	install -m 644 dcadec.pc $(DESTDIR)$(LIBDIR)/pkgconfig
+ifdef SONAME
+	ln -sf libdcadec$(DLLSUF)$(SONAMESUF) $(DESTDIR)$(LIBDIR)/libdcadec$(DLLSUF)
+	ln -sf libdcadec$(DLLSUF)$(SONAMESUF) $(DESTDIR)$(LIBDIR)/libdcadec$(DLLSUF)$(SONAMESUF_MAJOR)
+endif
+
+install-dec: $(OUT_DEC)
+	install -d -m 755 $(DESTDIR)$(BINDIR)
 	install -m 755 $(OUT_DEC) $(DESTDIR)$(BINDIR)
+
+install: install-lib install-dec

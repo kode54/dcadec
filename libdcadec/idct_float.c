@@ -81,36 +81,41 @@ struct idct_context *idct_init(struct core_decoder *parent)
 
 static void sum_a(const double * restrict input, double * restrict output, int len)
 {
-    for (int i = 0; i < len; i++)
+    int i;
+    for (i = 0; i < len; i++)
         output[i] = input[2 * i] + input[2 * i + 1];
 }
 
 static void sum_b(const double * restrict input, double * restrict output, int len)
 {
+    int i;
     output[0] = input[0];
-    for (int i = 1; i < len; i++)
+    for (i = 1; i < len; i++)
         output[i] = input[2 * i] + input[2 * i - 1];
 }
 
 static void sum_c(const double * restrict input, double * restrict output, int len)
 {
-    for (int i = 0; i < len; i++)
+    int i;
+    for (i = 0; i < len; i++)
         output[i] = input[2 * i];
 }
 
 static void sum_d(const double * restrict input, double * restrict output, int len)
 {
+    int i;
     output[0] = input[1];
-    for (int i = 1; i < len; i++)
+    for (i = 1; i < len; i++)
         output[i] = input[2 * i - 1] + input[2 * i + 1];
 }
 
 static void dct_a(const struct idct_context * restrict idct,
                   const double * restrict input, double * restrict output)
 {
-    for (int i = 0; i < DCT_A_ROWS; i++) {
+    int i, j;
+    for (i = 0; i < DCT_A_ROWS; i++) {
         double res = 0.0;
-        for (int j = 0; j < DCT_A_COLS; j++)
+        for (j = 0; j < DCT_A_COLS; j++)
             res += idct->dct_a[i][j] * input[j];
         output[i] = res;
     }
@@ -119,9 +124,10 @@ static void dct_a(const struct idct_context * restrict idct,
 static void dct_b(const struct idct_context * restrict idct,
                   const double * restrict input, double * restrict output)
 {
-    for (int i = 0; i < DCT_B_ROWS; i++) {
+    int i, j;
+    for (i = 0; i < DCT_B_ROWS; i++) {
         double res = input[0];
-        for (int j = 0; j < DCT_B_COLS; j++)
+        for (j = 0; j < DCT_B_COLS; j++)
             res += idct->dct_b[i][j] * input[1 + j];
         output[i] = res;
     }
@@ -130,32 +136,35 @@ static void dct_b(const struct idct_context * restrict idct,
 static void mod_a(const struct idct_context * restrict idct,
                   const double * restrict input, double * restrict output)
 {
-    for (int i = 0; i < MOD_A_HALF; i++)
+    int i, k;
+    for (i = 0; i < MOD_A_HALF; i++)
         output[i] = idct->mod_a[i] * (input[i] + input[MOD_A_HALF + i]);
 
-    for (int i = MOD_A_HALF, k = MOD_A_HALF - 1; i < MOD_A_SIZE; i++, k--)
+    for (i = MOD_A_HALF, k = MOD_A_HALF - 1; i < MOD_A_SIZE; i++, k--)
         output[i] = idct->mod_a[i] * (input[k] - input[MOD_A_HALF + k]);
 }
 
 static void mod_b(const struct idct_context * restrict idct,
                   double * restrict input, double * restrict output)
 {
-    for (int i = 0; i < MOD_B_SIZE; i++) {
+    int i, k;
+    for (i = 0; i < MOD_B_SIZE; i++) {
         input[MOD_B_SIZE + i] = idct->mod_b[i] * input[MOD_B_SIZE + i];
         output[i] = input[i] + input[MOD_B_SIZE + i];
     }
 
-    for (int i = 0, k = MOD_B_SIZE - 1; i < MOD_B_SIZE; i++, k--)
+    for (i = 0, k = MOD_B_SIZE - 1; i < MOD_B_SIZE; i++, k--)
         output[MOD_B_SIZE + i] = input[k] - input[MOD_B_SIZE + k];
 }
 
 static void mod_c(const struct idct_context * restrict idct,
                   const double * restrict input, double * restrict output)
 {
-    for (int i = 0; i < MOD_C_HALF; i++)
+    int i, k;
+    for (i = 0; i < MOD_C_HALF; i++)
         output[i] = idct->mod_c[i] * (input[i] + input[MOD_C_HALF + i]);
 
-    for (int i = MOD_C_HALF, k = MOD_C_HALF - 1; i < MOD_C_SIZE; i++, k--)
+    for (i = MOD_C_HALF, k = MOD_C_HALF - 1; i < MOD_C_SIZE; i++, k--)
         output[i] = idct->mod_c[i] * (input[k] - input[MOD_C_HALF + k]);
 }
 
@@ -184,32 +193,35 @@ void idct_perform32_float(const struct idct_context * restrict idct,
 static void mod64_a(const struct idct_context * restrict idct,
                     const double * restrict input, double * restrict output)
 {
-    for (int i = 0; i < MOD64_A_HALF; i++)
+    int i, k;
+    for (i = 0; i < MOD64_A_HALF; i++)
         output[i] = idct->mod64_a[i] * (input[i] + input[MOD64_A_HALF + i]);
 
-    for (int i = MOD64_A_HALF, k = MOD64_A_HALF - 1; i < MOD64_A_SIZE; i++, k--)
+    for (i = MOD64_A_HALF, k = MOD64_A_HALF - 1; i < MOD64_A_SIZE; i++, k--)
         output[i] = idct->mod64_a[i] * (input[k] - input[MOD64_A_HALF + k]);
 }
 
 static void mod64_b(const struct idct_context * restrict idct,
                     double * restrict input, double * restrict output)
 {
-    for (int i = 0; i < MOD64_B_SIZE; i++) {
+	int i, k;
+    for (i = 0; i < MOD64_B_SIZE; i++) {
         input[MOD64_B_SIZE + i] = idct->mod64_b[i] * input[MOD64_B_SIZE + i];
         output[i] = input[i] + input[MOD64_B_SIZE + i];
     }
 
-    for (int i = 0, k = MOD64_B_SIZE - 1; i < MOD64_B_SIZE; i++, k--)
+    for (i = 0, k = MOD64_B_SIZE - 1; i < MOD64_B_SIZE; i++, k--)
         output[MOD64_B_SIZE + i] = input[k] - input[MOD64_B_SIZE + k];
 }
 
 static void mod64_c(const struct idct_context * restrict idct,
                     const double * restrict input, double * restrict output)
 {
-    for (int i = 0; i < MOD64_C_HALF; i++)
+    int i, k;
+    for (i = 0; i < MOD64_C_HALF; i++)
         output[i] = idct->mod64_c[i] * (input[i] + input[MOD64_C_HALF + i]);
 
-    for (int i = MOD64_C_HALF, k = MOD64_C_HALF - 1; i < MOD64_C_SIZE; i++, k--)
+    for (i = MOD64_C_HALF, k = MOD64_C_HALF - 1; i < MOD64_C_SIZE; i++, k--)
         output[i] = idct->mod64_c[i] * (input[k] - input[MOD64_C_HALF + k]);
 }
 

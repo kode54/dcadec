@@ -26,6 +26,7 @@
 #include <stdarg.h>
 #include <string.h>
 #ifdef _MSC_VER
+#include <intrin.h>
 #define _USE_MATH_DEFINES
 #endif
 #include <math.h>
@@ -39,6 +40,21 @@
 
 #if AT_LEAST_GCC(3, 4)
 #define dca_clz(x)  __builtin_clz(x)
+#elif defined(_MSC_VER)
+static int __inline dca_clz(uint32_t value)
+{
+	unsigned long leading_zero = 0;
+
+	if (value)
+	{
+		_BitScanReverse(&leading_zero, value);
+		return (unsigned char)(31 - leading_zero);
+	}
+	else
+	{
+		return 32;
+	}
+}
 #else
 static inline int dca_clz(uint32_t x)
 {
@@ -72,6 +88,8 @@ static inline int dca_popcount(uint32_t x)
 
 #if AT_LEAST_GCC(4, 8)
 #define dca_bswap16(x)  __builtin_bswap16(x)
+#elif defined(_MSC_VER)
+#define dca_bswap16(x)  _byteswap_ushort(x)
 #else
 static inline uint16_t dca_bswap16(uint16_t x)
 {
@@ -82,69 +100,9 @@ static inline uint16_t dca_bswap16(uint16_t x)
 #if AT_LEAST_GCC(4, 3)
 #define dca_bswap32(x)  __builtin_bswap32(x)
 #define dca_bswap64(x)  __builtin_bswap64(x)
-#define dca_clz32(x)    __builtin_clz(x)
-#define dca_clz64(x)    __builtin_clzll(x)
-#define dca_popcount(x) __builtin_popcount(x)
 #elif defined(_MSC_VER)
-#include <intrin.h>
-#define dca_bswap16(x)  _byteswap_ushort(x)
 #define dca_bswap32(x)  _byteswap_ulong(x)
 #define dca_bswap64(x)  _byteswap_uint64(x)
-static unsigned char __inline dca_clz32(uint32_t value)
-{
-	unsigned long leading_zero = 0;
-
-	if (value)
-	{
-		_BitScanReverse(&leading_zero, value);
-		return (unsigned char)(31 - leading_zero);
-	}
-	else
-	{
-		return 32;
-	}
-}
-static unsigned char __inline dca_clz64(uint64_t value)
-{
-	unsigned long leading_zero = 0;
-
-	union
-	{
-		struct
-		{
-			uint32_t low, high;
-		} dw;
-		uint64_t lw;
-	} a;
-
-	a.lw = value;
-
-	if (a.dw.high)
-	{
-		_BitScanReverse(&leading_zero, a.dw.high);
-		return (unsigned char)(31 - leading_zero);
-	}
-	else
-	{
-		if (a.dw.low)
-		{
-			_BitScanReverse(&leading_zero, a.dw.low);
-			return (unsigned char)(63 - leading_zero);
-		}
-		else
-		{
-			return 64;
-		}
-	}
-}
-static __inline uint32_t dca_popcount(uint32_t i)
-{
-	i = i - ((i >> 1) & 0x55555555);
-	i = (i & 0x33333333) + ((i >> 2) & 0x33333333);
-	return (((i + (i >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
-}
-#define inline __inline
-#define restrict __restrict
 #else
 static inline uint32_t dca_bswap32(uint32_t x)
 {

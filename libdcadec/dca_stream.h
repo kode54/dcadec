@@ -51,9 +51,11 @@ struct dcadec_stream_info {
  *
  * @param opaque  A file handle to access using the callbacks.
  *
+ * @param flags Reserved; should be 0.
+ *
  * @return      Stream handle on success, NULL on failure.
  */
-DCADEC_API struct dcadec_stream *dcadec_stream_open(const struct dcadec_stream_callbacks * callbacks, void * opaque);
+DCADEC_API struct dcadec_stream *dcadec_stream_open(const struct dcadec_stream_callbacks * callbacks, void * opaque, int flags);
 
 /**
  * Close DTS stream.
@@ -107,5 +109,7 @@ DCADEC_API struct dcadec_stream_info *dcadec_stream_get_info(struct dcadec_strea
  * @param info  Pointer to information structure.
  */
 DCADEC_API void dcadec_stream_free_info(struct dcadec_stream_info *info);
+
+DCADEC_API void dcadec_stream_reset(struct dcadec_stream *stream);
 
 #endif

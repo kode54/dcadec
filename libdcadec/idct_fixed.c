@@ -22,27 +22,31 @@
 
 static void sum_a(const int * restrict input, int * restrict output, int len)
 {
-    for (int i = 0; i < len; i++)
+    int i;
+    for (i = 0; i < len; i++)
         output[i] = input[2 * i] + input[2 * i + 1];
 }
 
 static void sum_b(const int * restrict input, int * restrict output, int len)
 {
+    int i;
     output[0] = input[0];
-    for (int i = 1; i < len; i++)
+    for (i = 1; i < len; i++)
         output[i] = input[2 * i] + input[2 * i - 1];
 }
 
 static void sum_c(const int * restrict input, int * restrict output, int len)
 {
-    for (int i = 0; i < len; i++)
+    int i;
+    for (i = 0; i < len; i++)
         output[i] = input[2 * i];
 }
 
 static void sum_d(const int * restrict input, int * restrict output, int len)
 {
+    int i;
     output[0] = input[1];
-    for (int i = 1; i < len; i++)
+    for (i = 1; i < len; i++)
         output[i] = input[2 * i - 1] + input[2 * i + 1];
 }
 
@@ -61,9 +65,11 @@ static void dct_a(const int * restrict input, int * restrict output)
          {  822227, -2435084,  3954362, -5321677,  6484482, -7398092,  8027397, -8348215 }
     };
 
-    for (int i = 0; i < DCT_A_ROWS; i++) {
+    int i, j;
+
+    for (i = 0; i < DCT_A_ROWS; i++) {
         int64_t res = INT64_C(0);
-        for (int j = 0; j < DCT_A_COLS; j++)
+        for (j = 0; j < DCT_A_COLS; j++)
             res += (int64_t)cos_mod[i][j] * input[j];
         output[i] = norm23(res);
     }
@@ -83,9 +89,11 @@ static void dct_b(const int * restrict input, int * restrict output)
         { -8227423,  7750063, -6974873,  5931642, -4660461,  3210181, -1636536 }
     };
 
-    for (int i = 0; i < DCT_B_ROWS; i++) {
+    int i, j;
+
+    for (i = 0; i < DCT_B_ROWS; i++) {
         int64_t res = (int64_t)input[0] * (1 << 23);
-        for (int j = 0; j < DCT_B_COLS; j++)
+        for (j = 0; j < DCT_B_COLS; j++)
             res += (int64_t)cos_mod[i][j] * input[1 + j];
         output[i] = norm23(res);
     }
@@ -102,10 +110,12 @@ static void mod_a(const int * restrict input, int * restrict output)
         -12450076, -17261920, -28585092, -85479984
     };
 
-    for (int i = 0; i < MOD_A_HALF; i++)
+    int i, k;
+
+    for (i = 0; i < MOD_A_HALF; i++)
         output[i] = mul23(cos_mod[i], input[i] + input[MOD_A_HALF + i]);
 
-    for (int i = MOD_A_HALF, k = MOD_A_HALF - 1; i < MOD_A_SIZE; i++, k--)
+    for (i = MOD_A_HALF, k = MOD_A_HALF - 1; i < MOD_A_SIZE; i++, k--)
         output[i] = mul23(cos_mod[i], input[k] - input[MOD_A_HALF + k]);
 }
 
@@ -118,12 +128,14 @@ static void mod_b(int * restrict input, int * restrict output)
         6611520,  8897610, 14448934, 42791536
     };
 
-    for (int i = 0; i < MOD_B_SIZE; i++) {
+    int i, k;
+
+    for (i = 0; i < MOD_B_SIZE; i++) {
         input[MOD_B_SIZE + i] = mul23(cos_mod[i], input[MOD_B_SIZE + i]);
         output[i] = input[i] + input[MOD_B_SIZE + i];
     }
 
-    for (int i = 0, k = MOD_B_SIZE - 1; i < MOD_B_SIZE; i++, k--)
+    for (i = 0, k = MOD_B_SIZE - 1; i < MOD_B_SIZE; i++, k--)
         output[MOD_B_SIZE + i] = input[k] - input[MOD_B_SIZE + k];
 }
 
@@ -142,29 +154,33 @@ static void mod_c(const int * restrict input, int * restrict output)
         -6133390, -8566050, -14253820, -42727120
     };
 
-    for (int i = 0; i < MOD_C_HALF; i++)
+    int i, k;
+
+    for (i = 0; i < MOD_C_HALF; i++)
         output[i] = mul23(cos_mod[i], input[i] + input[MOD_C_HALF + i]);
 
-    for (int i = MOD_C_HALF, k = MOD_C_HALF - 1; i < MOD_C_SIZE; i++, k--)
+    for (i = MOD_C_HALF, k = MOD_C_HALF - 1; i < MOD_C_SIZE; i++, k--)
         output[i] = mul23(cos_mod[i], input[k] - input[MOD_C_HALF + k]);
 }
 
 static void clp_v(int *input, int len)
 {
-    for (int i = 0; i < len; i++)
+    int i;
+    for (i = 0; i < len; i++)
         input[i] = clip23(input[i]);
 }
 
 void idct_perform32_fixed(int * restrict input, int * restrict output)
 {
+    int i, shift, round;
     int mag = 0;
-    for (int i = 0; i < IDCT_SIZE; i++)
+    for (i = 0; i < IDCT_SIZE; i++)
         mag += abs(input[i]);
 
-    int shift = mag > 0x400000 ? 2 : 0;
-    int round = shift > 0 ? 1 << (shift - 1) : 0;
+    shift = mag > 0x400000 ? 2 : 0;
+    round = shift > 0 ? 1 << (shift - 1) : 0;
 
-    for (int i = 0; i < IDCT_SIZE; i++)
+    for (i = 0; i < IDCT_SIZE; i++)
         input[i] = (input[i] + round) >> shift;
 
     sum_a(input, output + 0 * IDCT_SIZE_2, IDCT_SIZE_2);
@@ -189,7 +205,7 @@ void idct_perform32_fixed(int * restrict input, int * restrict output)
 
     mod_c(input, output);
 
-    for (int i = 0; i < IDCT_SIZE; i++)
+    for (i = 0; i < IDCT_SIZE; i++)
         output[i] = clip23(output[i] * (1 << shift));
 }
 
@@ -208,10 +224,12 @@ static void mod64_a(const int * restrict input, int * restrict output)
         -24533560, -34264200, -57015280, -170908480
     };
 
-    for (int i = 0; i < MOD64_A_HALF; i++)
+    int i, k;
+
+    for (i = 0; i < MOD64_A_HALF; i++)
         output[i] = mul23(cos_mod[i], input[i] + input[MOD64_A_HALF + i]);
 
-    for (int i = MOD64_A_HALF, k = MOD64_A_HALF - 1; i < MOD64_A_SIZE; i++, k--)
+    for (i = MOD64_A_HALF, k = MOD64_A_HALF - 1; i < MOD64_A_SIZE; i++, k--)
         output[i] = mul23(cos_mod[i], input[k] - input[MOD64_A_HALF + k]);
 }
 
@@ -226,12 +244,14 @@ static void mod64_b(int * restrict input, int * restrict output)
         12450076, 17261920, 28585092, 85479984
     };
 
-    for (int i = 0; i < MOD64_B_SIZE; i++) {
+    int i, k;
+
+    for (i = 0; i < MOD64_B_SIZE; i++) {
         input[MOD64_B_SIZE + i] = mul23(cos_mod[i], input[MOD64_B_SIZE + i]);
         output[i] = input[i] + input[MOD64_B_SIZE + i];
     }
 
-    for (int i = 0, k = MOD64_B_SIZE - 1; i < MOD64_B_SIZE; i++, k--)
+    for (i = 0, k = MOD64_B_SIZE - 1; i < MOD64_B_SIZE; i++, k--)
         output[MOD64_B_SIZE + i] = input[k] - input[MOD64_B_SIZE + k];
 }
 
@@ -258,23 +278,26 @@ static void mod64_c(const int * restrict input, int * restrict output)
         -8641940, -12091426, -20144284, -60420720
     };
 
-    for (int i = 0; i < MOD64_C_HALF; i++)
+    int i, k;
+
+    for (i = 0; i < MOD64_C_HALF; i++)
         output[i] = mul23(cos_mod[i], input[i] + input[MOD64_C_HALF + i]);
 
-    for (int i = MOD64_C_HALF, k = MOD64_C_HALF - 1; i < MOD64_C_SIZE; i++, k--)
+    for (i = MOD64_C_HALF, k = MOD64_C_HALF - 1; i < MOD64_C_SIZE; i++, k--)
         output[i] = mul23(cos_mod[i], input[k] - input[MOD64_C_HALF + k]);
 }
 
 void idct_perform64_fixed(int * restrict input, int * restrict output)
 {
+    int i, shift, round;
     int mag = 0;
-    for (int i = 0; i < IDCT64_SIZE; i++)
+    for (i = 0; i < IDCT64_SIZE; i++)
         mag += abs(input[i]);
 
-    int shift = mag > 0x400000 ? 2 : 0;
-    int round = shift > 0 ? 1 << (shift - 1) : 0;
+    shift = mag > 0x400000 ? 2 : 0;
+    round = shift > 0 ? 1 << (shift - 1) : 0;
 
-    for (int i = 0; i < IDCT64_SIZE; i++)
+    for (i = 0; i < IDCT64_SIZE; i++)
         input[i] = (input[i] + round) >> shift;
 
     sum_a(input, output + 0 * IDCT64_SIZE_2, IDCT64_SIZE_2);
@@ -319,6 +342,6 @@ void idct_perform64_fixed(int * restrict input, int * restrict output)
 
     mod64_c(input, output);
 
-    for (int i = 0; i < IDCT64_SIZE; i++)
+    for (i = 0; i < IDCT64_SIZE; i++)
         output[i] = clip23(output[i] * (1 << shift));
 }

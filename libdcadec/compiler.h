@@ -19,20 +19,38 @@
 #ifndef COMPILER_H
 #define COMPILER_H
 
-#ifdef _MSC_VER
-#define inline      __inline
-#define restrict    __restrict
-
-#define fseeko  _fseeki64
-#define ftello  _ftelli64
-#define STDIN_FILENO    0
-#define STDOUT_FILENO   1
-
-typedef __int64 off_t;
-#endif
-
 #ifndef __GNUC__
 #define __attribute__(x)
+#endif
+
+#ifdef _MSC_VER
+#define inline __inline
+#define restrict __restrict
+#ifndef WIN64
+	__inline long int
+	lrint (double flt)
+	{	int intgr ;
+
+		_asm
+		{	fld flt
+			fistp intgr
+			} ;
+
+		return intgr ;
+	}
+
+	__inline long int
+	lrintf (float flt)
+	{	int intgr ;
+
+		_asm
+		{	fld flt
+			fistp intgr
+			} ;
+
+		return intgr ;
+	}
+#endif
 #endif
 
 #define AT_LEAST_GCC(major, minor)  \

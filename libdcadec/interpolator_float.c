@@ -43,19 +43,20 @@ static void interpolate_lfe(int *pcm_samples, int *lfe_samples, int npcmblocks,
     int factor = 64 << dec_select;
     int ncoeffs = 8 >> dec_select;
     int nlfesamples = npcmblocks >> (dec_select + 1);
+    int i, j, k, n;
 
     // Interpolation
-    for (int i = 0; i < nlfesamples; i++) {
+    for (i = 0; i < nlfesamples; i++) {
         int *src = lfe_samples + MAX_LFE_HISTORY + i;
 
         // One decimated sample generates 64 or 128 interpolated ones
-        for (int j = 0; j < factor / 2; j++) {
+        for (j = 0; j < factor / 2; j++) {
             // Clear accumulation
             double res1 = 0.0;
             double res2 = 0.0;
 
             // Accumulate
-            for (int k = 0; k < ncoeffs; k++) {
+            for (k = 0; k < ncoeffs; k++) {
                 res1 += filter_coeff[      j * ncoeffs + k] * src[-k];
                 res2 += filter_coeff[255 - j * ncoeffs - k] * src[-k];
             }
@@ -70,7 +71,7 @@ static void interpolate_lfe(int *pcm_samples, int *lfe_samples, int npcmblocks,
     }
 
     // Update history
-    for (int n = MAX_LFE_HISTORY - 1; n >= MAX_LFE_HISTORY - 8; n--)
+    for (n = MAX_LFE_HISTORY - 1; n >= MAX_LFE_HISTORY - 8; n--)
         lfe_samples[n] = lfe_samples[nlfesamples + n];
 }
 
@@ -95,21 +96,22 @@ INTERPOLATE_LFE(lfe_float_iir)
     // Select decimation factor
     int factor = 64 << dec_select;
     int nlfesamples = npcmblocks >> (dec_select + 1);
+    int i, j, k;
 
     // Load history
     double lfe_history[6];
-    for (int i = 0; i < 6; i++)
+    for (i = 0; i < 6; i++)
         lfe_history[i] = ((double *)lfe_samples)[i];
 
     // Interpolation
-    for (int i = 0; i < nlfesamples; i++) {
+    for (i = 0; i < nlfesamples; i++) {
         double res1 = lfe_samples[MAX_LFE_HISTORY + i] * lfe_iir_scale;
         double res2;
 
         // One decimated sample generates 64 or 128 interpolated ones
-        for (int j = 0; j < factor; j++) {
+        for (j = 0; j < factor; j++) {
             // Filter
-            for (int k = 0; k < 3; k++) {
+            for (k = 0; k < 3; k++) {
                 double tmp1 = lfe_history[k * 2 + 0];
                 double tmp2 = lfe_history[k * 2 + 1];
 
@@ -127,32 +129,36 @@ INTERPOLATE_LFE(lfe_float_iir)
     }
 
     // Store history
-    for (int i = 0; i < 6; i++)
+    for (i = 0; i < 6; i++)
         ((double *)lfe_samples)[i] = lfe_history[i];
 }
 
 INTERPOLATE_SUB(sub32_float)
 {
+    double *history;
+    const double *filter_coeff;
+    int sample;
+
     (void)subband_samples_hi;
     assert(!subband_samples_hi);
 
     // Get history pointer
-    double *history = dsp->history;
+    history = dsp->history;
 
     // Select filter
-    const double *filter_coeff = perfect ? band_fir_perfect : band_fir_nonperfect;
+    filter_coeff = perfect ? band_fir_perfect : band_fir_nonperfect;
 
     // Interpolation begins
-    for (int sample = 0; sample < nsamples; sample++) {
+    for (sample = 0; sample < nsamples; sample++) {
         int i, j, k;
+        double input[32];
+        double output[32];
 
         // Load in one sample from each subband
-        double input[32];
         for (i = 0; i < 32; i++)
             input[i] = subband_samples_lo[i][sample];
 
         // Inverse DCT
-        double output[32];
         idct_perform32_float(dsp->idct, input, output);
 
         // Store history
@@ -194,17 +200,21 @@ INTERPOLATE_SUB(sub32_float)
 
 INTERPOLATE_SUB(sub64_float)
 {
+    double *history;
+    int sample;
+
     (void)perfect;
 
     // Get history pointer
-    double *history = dsp->history;
+    history = dsp->history;
 
     // Interpolation begins
-    for (int sample = 0; sample < nsamples; sample++) {
+    for (sample = 0; sample < nsamples; sample++) {
         int i, j, k;
+        double input[64];
+        double output[64];
 
         // Load in one sample from each subband
-        double input[64];
         if (subband_samples_hi) {
             // Full 64 subbands, first 32 are residual coded
             for (i =  0; i < 32; i++)
@@ -220,7 +230,6 @@ INTERPOLATE_SUB(sub64_float)
         }
 
         // Inverse DCT
-        double output[64];
         idct_perform64_float(dsp->idct, input, output);
 
         // Store history

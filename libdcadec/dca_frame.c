@@ -60,7 +60,7 @@ DCADEC_API int dcadec_frame_convert_bitstream(uint8_t *dst, size_t *dst_size,
         *dst_size = src_size;
         return DCADEC_BITSTREAM_BE16;
 
-    case DCA_32BE_C(SYNC_WORD_CORE_LE):
+    case DCA_32BE_C((uint32_t)SYNC_WORD_CORE_LE):
     case DCA_32BE_C(SYNC_WORD_EXSS_LE):
         count = (src_size + 1) / 2;
         while (count--)
@@ -79,7 +79,7 @@ DCADEC_API int dcadec_frame_convert_bitstream(uint8_t *dst, size_t *dst_size,
         *dst_size = src_size - src_size / 8;
         return DCADEC_BITSTREAM_BE14;
 
-    case DCA_32BE_C(SYNC_WORD_CORE_LE14):
+    case DCA_32BE_C((uint32_t)SYNC_WORD_CORE_LE14):
         count = (src_size + 15) / 16;
         while (count--) {
             SRC_OP(LE)
@@ -103,11 +103,11 @@ DCADEC_API int dcadec_frame_parse_header(const uint8_t *data, size_t *size)
     struct bitstream bits;
     uint8_t header[DCADEC_FRAME_HEADER_SIZE];
     size_t header_size, frame_size;
+    int ret;
 
     if (!data || !size)
         return -DCADEC_EINVAL;
 
-    int ret;
     if ((ret = dcadec_frame_convert_bitstream(header, &header_size,
                                               data, DCADEC_FRAME_HEADER_SIZE)) < 0)
         return ret;
@@ -118,10 +118,11 @@ DCADEC_API int dcadec_frame_parse_header(const uint8_t *data, size_t *size)
     case SYNC_WORD_CORE: {
         bool normal_frame = bits_get1(&bits);
         int deficit_samples = bits_get(&bits, 5) + 1;
+		int npcmblocks;
         if (normal_frame && deficit_samples != 32)
             return -DCADEC_ENOSYNC;
         bits_skip1(&bits);
-        int npcmblocks = bits_get(&bits, 7) + 1;
+        npcmblocks = bits_get(&bits, 7) + 1;
         if ((npcmblocks & 7) && (npcmblocks < 6 || normal_frame))
             return -DCADEC_ENOSYNC;
         frame_size = bits_get(&bits, 14) + 1;
@@ -135,8 +136,9 @@ DCADEC_API int dcadec_frame_parse_header(const uint8_t *data, size_t *size)
     }
 
     case SYNC_WORD_EXSS: {
+		bool wide_hdr;
         bits_skip(&bits, 10);
-        bool wide_hdr = bits_get1(&bits);
+        wide_hdr = bits_get1(&bits);
         header_size = bits_get(&bits, 8 + 4 * wide_hdr) + 1;
         if ((header_size & 3) || header_size < DCADEC_FRAME_HEADER_SIZE)
             return -DCADEC_ENOSYNC;

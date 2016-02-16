@@ -108,7 +108,8 @@ static int reorder_samples(struct dcadec_context *dca, int **dca_samples, int dc
     int nchannels = 0;
 
     if (dca->flags & DCADEC_FLAG_NATIVE_LAYOUT) {
-        for (int dca_ch = 0; dca_ch < SPEAKER_COUNT; dca_ch++) {
+        int dca_ch;
+        for (dca_ch = 0; dca_ch < SPEAKER_COUNT; dca_ch++) {
             if (dca_mask & (1U << dca_ch)) {
                 if (!dca_samples[dca_ch])
                     return -DCADEC_EINVAL;
@@ -120,23 +121,25 @@ static int reorder_samples(struct dcadec_context *dca, int **dca_samples, int dc
         int wav_mask = 0;
         int *wav_samples[WAVESPKR_COUNT] = { NULL };
         const uint8_t *dca2wav;
+        size_t dca_ch;
+        int wav_ch;
         if (dca_mask == SPEAKER_LAYOUT_7POINT0_WIDE ||
             dca_mask == SPEAKER_LAYOUT_7POINT1_WIDE)
             dca2wav = dca2wav_wide;
         else
             dca2wav = dca2wav_norm;
-        for (size_t dca_ch = 0; dca_ch < sizeof(dca2wav_norm); dca_ch++) {
+        for (dca_ch = 0; dca_ch < sizeof(dca2wav_norm); dca_ch++) {
             if (dca_mask & (1 << dca_ch)) {
                 if (!dca_samples[dca_ch])
                     return -DCADEC_EINVAL;
-                int wav_ch = dca2wav[dca_ch];
+                wav_ch = dca2wav[dca_ch];
                 if (!wav_samples[wav_ch]) {
                     wav_samples[wav_ch] = dca_samples[dca_ch];
                     wav_mask |= 1 << wav_ch;
                 }
             }
         }
-        for (int wav_ch = 0; wav_ch < WAVESPKR_COUNT; wav_ch++) {
+        for (wav_ch = 0; wav_ch < WAVESPKR_COUNT; wav_ch++) {
             if (wav_mask & (1 << wav_ch)) {
                 dca->samples[nchannels++] = wav_samples[wav_ch];
             }
@@ -150,8 +153,9 @@ static int reorder_samples(struct dcadec_context *dca, int **dca_samples, int dc
 static bool shift_and_clip__(int *samples, int nsamples, int shift, int bits)
 {
     bool clipped = false;
+    int n;
 
-    for (int n = 0; n < nsamples; n++) {
+    for (n = 0; n < nsamples; n++) {
         int s = samples[n] * (1 << shift);
 #ifdef __ARM_FEATURE_SAT
         s = clip__(s, bits);
@@ -172,23 +176,25 @@ static bool shift_and_clip(struct dcadec_context *dca, int nchannels,
 {
     int shift = storage_bit_res - pcm_bit_res;
     int nsamples = dca->nframesamples;
+    int ch, n;
+    bool clipped;
 
     if (dca->flags & DCADEC_FLAG_DONT_CLIP) {
         if (shift)
-            for (int ch = 0; ch < nchannels; ch++)
-                for (int n = 0; n < nsamples; n++)
+            for (ch = 0; ch < nchannels; ch++)
+                for (n = 0; n < nsamples; n++)
                     dca->samples[ch][n] *= 1 << shift;
         return false;
     }
 
-    bool clipped = false;
+    clipped = false;
     switch (storage_bit_res) {
     case 24:
-        for (int ch = 0; ch < nchannels; ch++)
+        for (ch = 0; ch < nchannels; ch++)
             clipped |= shift_and_clip__(dca->samples[ch], nsamples, shift, 23);
         break;
     case 16:
-        for (int ch = 0; ch < nchannels; ch++)
+        for (ch = 0; ch < nchannels; ch++)
             clipped |= shift_and_clip__(dca->samples[ch], nsamples, shift, 15);
         break;
     default:
@@ -223,6 +229,10 @@ static int down_mix_prim_chset(struct dcadec_context *dca,
                                int *dmix_coeff_cur, int *dmix_coeff_pre,
                                int **samples, int nsamples, int *ch_mask)
 {
+    int nchannels;
+    int nsamples_log2;
+    int spkr, pos, ch;
+
     // No action if already 2.0
     if (*ch_mask == SPEAKER_LAYOUT_STEREO)
         return 0;
@@ -253,19 +263,22 @@ static int down_mix_prim_chset(struct dcadec_context *dca,
 
     memset(dca->dmix_sample_buffer, 0, 2 * nsamples * sizeof(int));
 
-    int nchannels = dca_popcount(*ch_mask);
-    int nsamples_log2 = 31 - dca_clz(nsamples);
+    nchannels = dca_popcount(*ch_mask);
+    nsamples_log2 = 31 - dca_clz(nsamples);
 
     // Perform downmix
-    for (int spkr = 0, pos = 0; spkr < SPEAKER_COUNT; spkr++) {
+    for (spkr = 0, pos = 0; spkr < SPEAKER_COUNT; spkr++) {
+        int *src, *dst, n;
+
         if (!(*ch_mask & (1U << spkr)))
             continue;
 
-        int *src = samples[spkr];
-        int *dst = dca->dmix_sample_buffer;
+        src = samples[spkr];
+        dst = dca->dmix_sample_buffer;
 
-        for (int ch = 0; ch < 2; ch++) {
+        for (ch = 0; ch < 2; ch++) {
             int coeff_cur, coeff_pre;
+			int delta;
 
             // Use custom matrix if present. Otherwise use default matrix that
             // covers all supported core audio channel arrangements.
@@ -276,14 +289,14 @@ static int down_mix_prim_chset(struct dcadec_context *dca,
                 coeff_cur = coeff_pre = get_dmix_coeff(nchannels, spkr, ch);
             }
 
-            int delta = coeff_cur - coeff_pre;
+            delta = coeff_cur - coeff_pre;
             if (delta) {
                 // Downmix coefficient interpolation
                 int ramp = 1 << (nsamples_log2 - 1);
-                for (int n = 0; n < nsamples; n++, ramp += delta)
+                for (n = 0; n < nsamples; n++, ramp += delta)
                     dst[n] += mul15(src[n], coeff_pre + (ramp >> nsamples_log2));
             } else if (coeff_cur) {
-                for (int n = 0; n < nsamples; n++)
+                for (n = 0; n < nsamples; n++)
                     dst[n] += mul15(src[n], coeff_cur);
             }
 
@@ -302,6 +315,8 @@ static int down_mix_prim_chset(struct dcadec_context *dca,
 static int filter_core_frame(struct dcadec_context *dca)
 {
     struct core_decoder *core = dca->core;
+
+    int nchannels;
 
     // Filter core frame
     int ret;
@@ -326,7 +341,6 @@ static int filter_core_frame(struct dcadec_context *dca)
     }
 
     // Reorder sample buffer pointers
-    int nchannels;
     if ((nchannels = reorder_samples(dca, core->output_samples, core->ch_mask)) <= 0)
         return -DCADEC_EINVAL;
 
@@ -381,13 +395,14 @@ static struct xll_chset *find_next_hier_dmix_chset(struct xll_chset *c)
 
 static void prescale_down_mix(struct xll_chset *c, struct xll_chset *o)
 {
+    int i, j;
     int *coeff_ptr = c->dmix_coeff_cur;
-    for (int i = 0; i < c->hier_m; i++) {
+    for (i = 0; i < c->hier_m; i++) {
         int scale = o->dmix_scale_cur[i];
         int scale_inv = o->dmix_scale_inv_cur[i];
         c->dmix_scale_cur[i] = mul15(c->dmix_scale_cur[i], scale);
         c->dmix_scale_inv_cur[i] = mul16(c->dmix_scale_inv_cur[i], scale_inv);
-        for (int j = 0; j < c->nchannels; j++) {
+        for (j = 0; j < c->nchannels; j++) {
             int coeff = mul16(*coeff_ptr, scale_inv);
             *coeff_ptr++ = mul15(coeff, o->dmix_scale_cur[c->hier_m + j]);
         }
@@ -405,12 +420,13 @@ static void undo_down_mix(struct xll_chset *c, struct downmix *dmix, int band)
     struct xll_band *b = &c->bands[band];
     int nsamples = xll->nframesamples;
     int nsamples_log2 = xll->nframesamples_log2;
+    int i, j, k;
 
     if (!b->dmix_embedded)
         return;
 
-    for (int i = 0; i < c->hier_m; i++) {
-        for (int j = 0; j < c->nchannels; j++) {
+    for (i = 0; i < c->hier_m; i++) {
+        for (j = 0; j < c->nchannels; j++) {
             int coeff_cur = c->dmix_coeff_cur[i * c->nchannels + j];
             int coeff_pre = c->dmix_coeff_pre[i * c->nchannels + j];
             int delta = coeff_cur - coeff_pre;
@@ -422,16 +438,16 @@ static void undo_down_mix(struct xll_chset *c, struct downmix *dmix, int band)
             if (delta) {
                 // Downmix coefficient interpolation
                 int ramp = 1 << (nsamples_log2 - 1);
-                for (int k = 0; k < nsamples; k++, ramp += delta)
+                for (k = 0; k < nsamples; k++, ramp += delta)
                     dst[k] -= mul15(src[k], coeff_pre + (ramp >> nsamples_log2));
             } else if (coeff_cur) {
-                for (int k = 0; k < nsamples; k++)
+                for (k = 0; k < nsamples; k++)
                     dst[k] -= mul15(src[k], coeff_cur);
             }
 
             // Undo downmix of decimator history
             if (band == XLL_BAND_1 && coeff_pre)
-                for (int k = 1; k < XLL_DECI_HISTORY; k++)
+                for (k = 1; k < XLL_DECI_HISTORY; k++)
                     dmix->deci_history[i][k] -=
                         mul15(c->deci_history[j][k], coeff_pre);
         }
@@ -444,11 +460,12 @@ static void scale_down_mix(struct xll_chset *c, struct downmix *dmix, int band)
     struct xll_band *b = &c->bands[band];
     int nsamples = xll->nframesamples;
     int nsamples_log2 = xll->nframesamples_log2;
+    int i, k;
 
     if (!b->dmix_embedded)
         return;
 
-    for (int i = 0; i < c->hier_m; i++) {
+    for (i = 0; i < c->hier_m; i++) {
         int scale_cur = c->dmix_scale_cur[i];
         int scale_pre = c->dmix_scale_pre[i];
         int delta = scale_cur - scale_pre;
@@ -459,16 +476,16 @@ static void scale_down_mix(struct xll_chset *c, struct downmix *dmix, int band)
         if (delta) {
             // Scaling coefficient interpolation
             int ramp = 1 << (nsamples_log2 - 1);
-            for (int k = 0; k < nsamples; k++, ramp += delta)
+            for (k = 0; k < nsamples; k++, ramp += delta)
                 buf[k] = mul15(buf[k], scale_pre + (ramp >> nsamples_log2));
         } else if (scale_cur != (1 << 15)) {
-            for (int k = 0; k < nsamples; k++)
+            for (k = 0; k < nsamples; k++)
                 buf[k] = mul15(buf[k], scale_cur);
         }
 
         // Scale down decimator history
         if (band == XLL_BAND_1 && scale_pre != (1 << 15))
-            for (int k = 1; k < XLL_DECI_HISTORY; k++)
+            for (k = 1; k < XLL_DECI_HISTORY; k++)
                 dmix->deci_history[i][k] =
                     mul15(dmix->deci_history[i][k], scale_pre);
     }
@@ -479,6 +496,7 @@ static int hier_down_mix(struct xll_decoder *xll)
     struct downmix dmix;
     struct xll_chset *c;
     int i, nchannels = 0;
+    int ch;
 
     // Build channel vectors for active channel sets that are part of hierarchy
     for (i = 0, c = xll->chset; i < xll->nactivechsets; i++, c++) {
@@ -488,7 +506,7 @@ static int hier_down_mix(struct xll_decoder *xll)
         if (nchannels + c->nchannels > SPEAKER_COUNT)
             return -DCADEC_EINVAL;
 
-        for (int ch = 0; ch < c->nchannels; ch++) {
+        for (ch = 0; ch < c->nchannels; ch++) {
             dmix.samples[XLL_BAND_0][nchannels] =
                 c->bands[XLL_BAND_0].msb_sample_buffer[ch];
             dmix.samples[XLL_BAND_1][nchannels] =
@@ -594,13 +612,14 @@ static int validate_hd_ma_frame(struct dcadec_context *dca)
 
     // Verify that core is compatible if there are residual encoded channel sets
     if (dca->has_residual_encoded) {
+		int rate, nsamples;
         if (!(dca->packet & PACKET_CORE)) {
             xll_err("Residual encoded channels are present without core");
             return -DCADEC_EINVAL;
         }
 
-        int rate = dca->core->sample_rate;
-        int nsamples = dca->core->npcmblocks * NUM_PCMBLOCK_SAMPLES;
+        rate = dca->core->sample_rate;
+        nsamples = dca->core->npcmblocks * NUM_PCMBLOCK_SAMPLES;
 
         // Double sampling frequency if needed
         if (p->freq == 96000 && rate == 48000) {
@@ -626,19 +645,21 @@ static int validate_hd_ma_frame(struct dcadec_context *dca)
 
 static void force_lossy_output(struct core_decoder *core, struct xll_chset *c)
 {
+	int ch, spkr, core_spkr;
+
     // Clear all band data
     xll_clear_band_data(c, XLL_BAND_0);
     if (c->nfreqbands > 1)
         xll_clear_band_data(c, XLL_BAND_1);
 
     // Replace non-residual encoded channels with lossy counterparts
-    for (int ch = 0; ch < c->nchannels; ch++) {
+    for (ch = 0; ch < c->nchannels; ch++) {
         if (!(c->residual_encode & (1 << ch)))
             continue;
-        int spkr = xll_map_ch_to_spkr(c, ch);
+        spkr = xll_map_ch_to_spkr(c, ch);
         if (spkr < 0)
             continue;
-        int core_spkr = map_spkr_to_core_spkr(core, spkr);
+        core_spkr = map_spkr_to_core_spkr(core, spkr);
         if (core_spkr < 0)
             continue;
         c->residual_encode &= ~(1 << ch);
@@ -689,6 +710,8 @@ static int combine_residual_core_frame(struct dcadec_context *dca,
     struct xll_decoder *xll = dca->xll;
     int nsamples = xll->nframesamples;
     int nsamples_log2 = xll->nframesamples_log2;
+    struct xll_chset *o;
+    int ch, spkr, core_spkr, shift, round, *dst, *src, n;
 
     if (c->freq != core->output_rate)
         return -DCADEC_EINVAL;
@@ -699,29 +722,29 @@ static int combine_residual_core_frame(struct dcadec_context *dca,
     // See if this channel set is downmixed and find the next channel set in
     // hierarchy. If downmixed, undo core pre-scaling before combining with
     // residual (residual is not scaled).
-    struct xll_chset *o = find_next_hier_dmix_chset(c);
+    o = find_next_hier_dmix_chset(c);
 
     // Reduce core bit width and combine with residual
-    for (int ch = 0; ch < c->nchannels; ch++) {
+    for (ch = 0; ch < c->nchannels; ch++) {
         if (c->residual_encode & (1 << ch))
             continue;
 
-        int spkr = xll_map_ch_to_spkr(c, ch);
+        spkr = xll_map_ch_to_spkr(c, ch);
         if (spkr < 0)
             return -DCADEC_EINVAL;
 
-        int core_spkr = map_spkr_to_core_spkr(core, spkr);
+        core_spkr = map_spkr_to_core_spkr(core, spkr);
         if (core_spkr < 0)
             return -DCADEC_EINVAL;
 
-        int shift = 24 - c->pcm_bit_res;
+        shift = 24 - c->pcm_bit_res;
         // Account for LSB width
         if (xll->scalable_lsbs)
             shift += xll_get_lsb_width(c, XLL_BAND_0, ch);
-        int round = shift > 0 ? 1 << (shift - 1) : 0;
+        round = shift > 0 ? 1 << (shift - 1) : 0;
 
-        int *dst = c->bands[XLL_BAND_0].msb_sample_buffer[ch];
-        int *src = core->output_samples[core_spkr];
+        dst = c->bands[XLL_BAND_0].msb_sample_buffer[ch];
+        src = core->output_samples[core_spkr];
         if (o) {
             // Undo embedded core downmix pre-scaling
             int scale_inv_cur = o->dmix_scale_inv_cur[c->hier_m + ch];
@@ -731,17 +754,17 @@ static int combine_residual_core_frame(struct dcadec_context *dca,
             if (delta) {
                 // Scaling coefficient interpolation
                 int ramp = 1 << (nsamples_log2 - 1);
-                for (int n = 0; n < nsamples; n++, ramp += delta) {
+                for (n = 0; n < nsamples; n++, ramp += delta) {
                     int scale_inv = scale_inv_pre + (ramp >> nsamples_log2);
                     dst[n] += clip23((mul16(src[n], scale_inv) + round) >> shift);
                 }
             } else {
-                for (int n = 0; n < nsamples; n++)
+                for (n = 0; n < nsamples; n++)
                     dst[n] += clip23((mul16(src[n], scale_inv_cur) + round) >> shift);
             }
         } else {
             // No downmix scaling
-            for (int n = 0; n < nsamples; n++)
+            for (n = 0; n < nsamples; n++)
                 dst[n] += (src[n] + round) >> shift;
         }
     }
@@ -753,7 +776,13 @@ static int filter_hd_ma_frame(struct dcadec_context *dca)
 {
     struct xll_decoder *xll = dca->xll;
     struct xll_chset *p = &xll->chset[0], *c;
-    int ret, i;
+    int ret, i, ch;
+    int nchannels;
+	bool clipped;
+
+    // Output speaker map and channel mask
+    int *spkr_map[SPEAKER_COUNT] = { NULL };
+    int ch_mask = 0;
 
     // Filter core frame if present
     if (dca->packet & PACKET_CORE)
@@ -801,10 +830,6 @@ static int filter_hd_ma_frame(struct dcadec_context *dca)
     if (xll->nfreqbands > 1 && (ret = xll_assemble_freq_bands(xll)) < 0)
         return ret;
 
-    // Output speaker map and channel mask
-    int *spkr_map[SPEAKER_COUNT] = { NULL };
-    int ch_mask = 0;
-
     // Fake up channel mask for primary channel set if needed for LtRt decoding
     if (!p->ch_mask_enabled) {
         if (p->nchannels == 2)
@@ -815,7 +840,7 @@ static int filter_hd_ma_frame(struct dcadec_context *dca)
 
     // Build the output speaker map
     for (i = 0, c = xll->chset; i < xll->nactivechsets; i++, c++) {
-        for (int ch = 0; ch < c->nchannels; ch++) {
+        for (ch = 0; ch < c->nchannels; ch++) {
             int spkr = xll_map_ch_to_spkr(c, ch);
             if (spkr < 0)
                 return -DCADEC_EINVAL;
@@ -852,7 +877,6 @@ static int filter_hd_ma_frame(struct dcadec_context *dca)
     }
 
     // Reorder sample buffer pointers
-    int nchannels;
     if ((nchannels = reorder_samples(dca, spkr_map, ch_mask)) <= 0)
         return -DCADEC_EINVAL;
 
@@ -862,7 +886,7 @@ static int filter_hd_ma_frame(struct dcadec_context *dca)
     dca->profile = DCADEC_PROFILE_HD_MA;
 
     // Shift and clip samples to account for storage bit width
-    bool clipped = shift_and_clip(dca, nchannels, p->storage_bit_res, p->pcm_bit_res);
+    clipped = shift_and_clip(dca, nchannels, p->storage_bit_res, p->pcm_bit_res);
 
     // Warn if this frame has not been decoded losslessly
     if ((dca->packet & PACKET_RECOVERY) || xll->nfailedsegs > 0)
@@ -910,15 +934,19 @@ static int alloc_xll_decoder(struct dcadec_context *dca)
 DCADEC_API int dcadec_context_parse(struct dcadec_context *dca, uint8_t *data, size_t size)
 {
     int status = 0, ret;
+    int prev_packet;
+
+    struct exss_asset *asset = NULL;
 
     if (!dca || !data || size < 4 || size > MAX_PACKET_SIZE || ((uintptr_t)data & 3))
         return -DCADEC_EINVAL;
 
-    int prev_packet = dca->packet;
+    prev_packet = dca->packet;
     dca->packet = 0;
 
     // Parse backward compatible core sub-stream
     if (DCA_MEM32NE(data) == DCA_32BE_C(SYNC_WORD_CORE)) {
+        size_t frame_size;
         if ((ret = alloc_core_decoder(dca)) < 0)
             return ret;
         if ((ret = core_parse(dca->core, data, size, dca->flags, NULL)) < 0) {
@@ -931,14 +959,12 @@ DCADEC_API int dcadec_context_parse(struct dcadec_context *dca, uint8_t *data, s
         dca->packet |= PACKET_CORE;
 
         // EXXS data must be aligned on 4-byte boundary by the caller
-        size_t frame_size = DCA_ALIGN(dca->core->frame_size, 4);
+        frame_size = DCA_ALIGN(dca->core->frame_size, 4);
         if (size - 4 > frame_size) {
             data += frame_size;
             size -= frame_size;
         }
     }
-
-    struct exss_asset *asset = NULL;
 
     // Parse extension sub-stream (EXSS)
     if (DCA_MEM32NE(data) == DCA_32BE_C(SYNC_WORD_EXSS)) {

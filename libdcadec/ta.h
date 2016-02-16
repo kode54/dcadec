@@ -43,7 +43,7 @@ static inline size_t ta_calc_array_size(size_t element_size, size_t count)
 static inline int ta_zalloc_fast(void *ta_parent, void *ptr,
                                  size_t count, size_t element_size)
 {
-    void **_ptr = ptr;
+    void **_ptr = (void **) ptr;
     size_t old_size = ta_get_size(*_ptr);
     size_t new_size = ta_calc_array_size(element_size, count);
 
@@ -60,7 +60,7 @@ static inline int ta_zalloc_fast(void *ta_parent, void *ptr,
 static inline int ta_alloc_fast(void *ta_parent, void *ptr,
                                 size_t count, size_t element_size)
 {
-    void **_ptr = ptr;
+    void **_ptr = (void **) ptr;
     size_t old_size = ta_get_size(*_ptr);
     size_t new_size = ta_calc_array_size(element_size, count);
 

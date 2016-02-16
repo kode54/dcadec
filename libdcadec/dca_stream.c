@@ -78,7 +78,7 @@ static int parse_hd_hdr(struct dcadec_stream *stream)
 
         switch (header[0]) {
         case DCA_64BE_C(STRMDATA): {
-            off_t pos = steam->cb->tell(stream->fp);
+            off_t pos = stream->cb->tell(stream->fp);
             if (pos < 0)
                 return -1;
             stream->stream_size = size;
@@ -136,26 +136,28 @@ static int parse_wav_hdr(struct dcadec_stream *stream)
 {
     uint32_t header[2];
 
-    if (fread(header, sizeof(header), 1, stream->fp) != 1)
+    if (stream->cb->read(stream->fp, header, sizeof(header)) != sizeof(header))
         goto rewind;
 
     if (header[0] != DCA_32LE_C(TAG_RIFF))
         goto rewind;
 
-    if (fread(header, sizeof(header[0]), 1, stream->fp) != 1)
+    if (stream->cb->read(stream->fp, header, sizeof(header[0]) != sizeof(header[0])))
         goto rewind;
 
     if (header[0] != DCA_32LE_C(TAG_WAVE))
         goto rewind;
 
     while (true) {
-        if (fread(header, sizeof(header), 1, stream->fp) != 1)
+        uint32_t size;
+
+        if (stream->cb->read(stream->fp, header, sizeof(header)) != sizeof(header))
             return -1;
 
-        uint32_t size = DCA_32LE(header[1]);
+        size = DCA_32LE(header[1]);
 
         if (header[0] == DCA_32LE_C(TAG_data)) {
-            off_t pos = ftello(stream->fp);
+            off_t pos = stream->cb->tell(stream->fp);
             if (pos < 0)
                 return -1;
             if (size) {
@@ -166,7 +168,7 @@ static int parse_wav_hdr(struct dcadec_stream *stream)
             return 1;
         }
 
-        if (fseeko(stream->fp, size, SEEK_CUR) < 0)
+		if (stream->cb->seek(stream->fp, size, SEEK_CUR) < 0)
             return -1;
     }
 
@@ -176,11 +178,13 @@ rewind:
     return fseeko(stream->fp, 0, SEEK_SET);
 }
 
-DCADEC_API struct dcadec_stream *dcadec_stream_open(const struct dcadec_stream_callbacks * cb, void * opaque)
+DCADEC_API struct dcadec_stream *dcadec_stream_open(const struct dcadec_stream_callbacks * cb, void * opaque, int flags)
 {
+	struct dcadec_stream *stream;
+
     (void)flags;
 
-    struct dcadec_stream *stream = ta_znew(NULL, struct dcadec_stream);
+    stream = ta_znew(NULL, struct dcadec_stream);
     if (!stream)
         return NULL;
 
@@ -211,7 +215,7 @@ DCADEC_API void dcadec_stream_reset(struct dcadec_stream *stream)
 {
     if (stream) {
         if (stream->backup_sync)
-            stream->cb->seek(stream->fp, -SYNC_SIZE, SEEK_CUR);
+            stream->cb->seek(stream->fp, -4, SEEK_CUR);
         stream->backup_sync = 0;
     }
 }
@@ -247,6 +251,7 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
     uint8_t header[DCADEC_FRAME_HEADER_SIZE], *buf;
     size_t frame_size;
     int ret;
+	uint32_t sync;
 
     // Stop at position indicated by STRMDATA if known
     if (stream->stream_end > 0 && stream->cb->tell(stream->fp) >= stream->stream_end)
@@ -254,12 +259,12 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
 
     // Start with a backed up sync word. If there is none, advance one byte at
     // a time until proper sync word is read from the input byte stream.
-    uint32_t sync = stream->backup_sync;
+    sync = stream->backup_sync;
     while (sync != SYNC_WORD_CORE
         && sync != SYNC_WORD_EXSS
-        && sync != SYNC_WORD_CORE_LE
+        && sync != (uint32_t)SYNC_WORD_CORE_LE
         && sync != SYNC_WORD_EXSS_LE
-        && sync != SYNC_WORD_CORE_LE14
+        && sync != (uint32_t)SYNC_WORD_CORE_LE14
         && sync != SYNC_WORD_CORE_BE14) {
         int c = stream->cb->getc(stream->fp);
         if (c == EOF)
@@ -303,7 +308,7 @@ static int read_frame(struct dcadec_stream *stream, uint32_t *sync_p)
         return 0;
 
     // Work around overread that occurs for 14-bit streams with excessive frame size
-    if (sync == SYNC_WORD_CORE_LE14 || sync == SYNC_WORD_CORE_BE14)
+    if (sync == (uint32_t)SYNC_WORD_CORE_LE14 || sync == SYNC_WORD_CORE_BE14)
         stream->backup_sync = DCA_MEM32BE(&buf[frame_size - 4]);
 
     // Convert the frame in place
@@ -340,7 +345,7 @@ DCADEC_API int dcadec_stream_read(struct dcadec_stream *stream, uint8_t **data, 
 
     // Check for EXSS that may follow core frame and try to concatenate both
     // frames into single packet
-    if (sync == SYNC_WORD_CORE || sync == SYNC_WORD_CORE_LE) {
+    if (sync == SYNC_WORD_CORE || sync == (uint32_t)SYNC_WORD_CORE_LE) {
         ret = read_frame(stream, NULL);
         if (ret < 0 && ret != -DCADEC_ENOSYNC)
             return ret;
@@ -375,9 +380,11 @@ DCADEC_API int dcadec_stream_progress(struct dcadec_stream *stream)
 
 DCADEC_API struct dcadec_stream_info *dcadec_stream_get_info(struct dcadec_stream *stream)
 {
+	struct dcadec_stream_info *info;
+
     if (!stream || !stream->aupr_present)
         return NULL;
-    struct dcadec_stream_info *info = ta_znew(NULL, struct dcadec_stream_info);
+    info = ta_znew(NULL, struct dcadec_stream_info);
     if (!info)
         return NULL;
 

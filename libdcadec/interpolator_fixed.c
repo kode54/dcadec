@@ -24,24 +24,26 @@
 
 INTERPOLATE_LFE(lfe_fixed_fir)
 {
+    int nlfesamples, i, j, k, n;
+
     (void)dec_select;
     assert(!dec_select);
 
     // Select decimation factor
-    int nlfesamples = npcmblocks >> 1;
+    nlfesamples = npcmblocks >> 1;
 
     // Interpolation
-    for (int i = 0; i < nlfesamples; i++) {
+    for (i = 0; i < nlfesamples; i++) {
         int *src = lfe_samples + MAX_LFE_HISTORY + i;
 
         // One decimated sample generates 64 interpolated ones
-        for (int j = 0; j < 32; j++) {
+        for (j = 0; j < 32; j++) {
             // Clear accumulation
             int64_t res1 = INT64_C(0);
             int64_t res2 = INT64_C(0);
 
             // Accumulate
-            for (int k = 0; k < 8; k++) {
+            for (k = 0; k < 8; k++) {
                 res1 += (int64_t)lfe_fir_64[      j * 8 + k] * src[-k];
                 res2 += (int64_t)lfe_fir_64[255 - j * 8 - k] * src[-k];
             }
@@ -56,32 +58,35 @@ INTERPOLATE_LFE(lfe_fixed_fir)
     }
 
     // Update history
-    for (int n = MAX_LFE_HISTORY - 1; n >= MAX_LFE_HISTORY - 8; n--)
+    for (n = MAX_LFE_HISTORY - 1; n >= MAX_LFE_HISTORY - 8; n--)
         lfe_samples[n] = lfe_samples[nlfesamples + n];
 }
 
 INTERPOLATE_SUB(sub32_fixed)
 {
+    int *history, sample;
+    const int32_t *filter_coeff;
+
     (void)subband_samples_hi;
     assert(!subband_samples_hi);
 
     // Get history pointer
-    int *history = dsp->history;
+    history = dsp->history;
 
     // Select filter
-    const int32_t *filter_coeff = perfect ? band_fir_perfect : band_fir_nonperfect;
+    filter_coeff = perfect ? band_fir_perfect : band_fir_nonperfect;
 
     // Interpolation begins
-    for (int sample = 0; sample < nsamples; sample++) {
+    for (sample = 0; sample < nsamples; sample++) {
         int i, j, k;
+        int input[32];
+        int output[32];
 
         // Load in one sample from each subband
-        int input[32];
         for (i = 0; i < 32; i++)
             input[i] = subband_samples_lo[i][sample];
 
         // Inverse DCT
-        int output[32];
         idct_perform32_fixed(input, output);
 
         // Store history
@@ -126,17 +131,20 @@ INTERPOLATE_SUB(sub32_fixed)
 
 INTERPOLATE_SUB(sub64_fixed)
 {
+    int *history, sample;
+
     (void)perfect;
 
     // Get history pointer
-    int *history = dsp->history;
+    history = dsp->history;
 
     // Interpolation begins
-    for (int sample = 0; sample < nsamples; sample++) {
+    for (sample = 0; sample < nsamples; sample++) {
         int i, j, k;
+        int input[64];
+        int output[64];
 
         // Load in one sample from each subband
-        int input[64];
         if (subband_samples_hi) {
             // Full 64 subbands, first 32 are residual coded
             for (i =  0; i < 32; i++)
@@ -152,7 +160,6 @@ INTERPOLATE_SUB(sub64_fixed)
         }
 
         // Inverse DCT
-        int output[64];
         idct_perform64_fixed(input, output);
 
         // Store history

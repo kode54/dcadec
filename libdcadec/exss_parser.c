@@ -41,10 +41,11 @@ static void parse_xll_parameters(struct exss_asset *asset)
     // XLL sync word present flag
     asset->xll_sync_present = bits_get1(&exss->bits);
     if (asset->xll_sync_present) {
+        int xll_delay_nbits;
         // Peak bit rate smoothing buffer size
         bits_skip(&exss->bits, 4);
         // Number of bits for XLL decoding delay
-        int xll_delay_nbits = bits_get(&exss->bits, 5) + 1;
+        xll_delay_nbits = bits_get(&exss->bits, 5) + 1;
         // Initial XLL decoding delay in frames
         asset->xll_delay_nframes = bits_get(&exss->bits, xll_delay_nbits);
         // Number of bytes offset to XLL sync
@@ -71,6 +72,7 @@ static int parse_descriptor(struct exss_asset *asset)
 {
     struct exss_parser *exss = asset->parser;
     int i, j, ret, descr_pos = exss->bits.index;
+	bool drc_present;
 
     // Size of audio asset descriptor in bytes
     int descr_size = bits_get(&exss->bits, 9) + 1;
@@ -113,6 +115,10 @@ static int parse_descriptor(struct exss_asset *asset)
         // One to one map channel to speakers
         asset->one_to_one_map_ch_to_spkr = bits_get1(&exss->bits);
         if (asset->one_to_one_map_ch_to_spkr) {
+            int spkr_mask_nbits;
+            int spkr_remap_nsets;
+            int nspeakers[8];
+
             // Embedded stereo flag
             if (asset->nchannels_total > 2)
                 asset->embedded_stereo = bits_get1(&exss->bits);
@@ -124,7 +130,7 @@ static int parse_descriptor(struct exss_asset *asset)
             // Speaker mask enabled flag
             asset->spkr_mask_enabled = bits_get1(&exss->bits);
 
-            int spkr_mask_nbits = 0;
+            spkr_mask_nbits = 0;
             if (asset->spkr_mask_enabled) {
                 // Number of bits for speaker activity mask
                 spkr_mask_nbits = (bits_get(&exss->bits, 2) + 1) << 2;
@@ -133,14 +139,13 @@ static int parse_descriptor(struct exss_asset *asset)
             }
 
             // Number of speaker remapping sets
-            int spkr_remap_nsets = bits_get(&exss->bits, 3);
+            spkr_remap_nsets = bits_get(&exss->bits, 3);
             if (spkr_remap_nsets && !spkr_mask_nbits) {
                 exss_err("Speaker mask disabled yet there are remapping sets");
                 return -DCADEC_EBADDATA;
             }
 
             // Standard loudspeaker layout mask
-            int nspeakers[8];
             for (i = 0; i < spkr_remap_nsets; i++)
                 nspeakers[i] = count_chs_for_mask(bits_get(&exss->bits, spkr_mask_nbits));
 
@@ -171,7 +176,7 @@ static int parse_descriptor(struct exss_asset *asset)
     //
 
     // Dynamic range coefficient presence flag
-    bool drc_present = bits_get1(&exss->bits);
+    drc_present = bits_get1(&exss->bits);
 
     // Code for dynamic range coefficient
     if (drc_present)
@@ -188,6 +193,8 @@ static int parse_descriptor(struct exss_asset *asset)
 
     // Mixing metadata presence flag
     if (exss->mix_metadata_enabled && bits_get1(&exss->bits)) {
+		int nchannels_dmix;
+
         // External mixing flag
         bits_skip1(&exss->bits);
 
@@ -210,7 +217,7 @@ static int parse_descriptor(struct exss_asset *asset)
         else
             bits_skip(&exss->bits, 6 * exss->nmixoutconfigs);
 
-        int nchannels_dmix = asset->nchannels_total;
+        nchannels_dmix = asset->nchannels_total;
         if (asset->embedded_6ch)
             nchannels_dmix += 6;
         if (asset->embedded_stereo)
@@ -361,7 +368,9 @@ static int set_exss_offsets(struct exss_asset *asset)
 
 int exss_parse(struct exss_parser *exss, uint8_t *data, int size)
 {
-    int i, j, ret;
+    int i, j, ret, header_size;
+    bool wide_hdr;
+    int offset;
 
     bits_init(&exss->bits, data, size, 0);
 
@@ -375,10 +384,10 @@ int exss_parse(struct exss_parser *exss, uint8_t *data, int size)
     exss->exss_index = bits_get(&exss->bits, 2);
 
     // Flag indicating short or long header size
-    bool wide_hdr = bits_get1(&exss->bits);
+    wide_hdr = bits_get1(&exss->bits);
 
     // Extension substream header length
-    int header_size = bits_get(&exss->bits, 8 + 4 * wide_hdr) + 1;
+    header_size = bits_get(&exss->bits, 8 + 4 * wide_hdr) + 1;
 
     // Check CRC
     if ((ret = bits_check_crc(&exss->bits, 32 + 8, header_size * 8)) < 0) {
@@ -398,6 +407,8 @@ int exss_parse(struct exss_parser *exss, uint8_t *data, int size)
     // Per stream static fields presence flag
     exss->static_fields_present = bits_get1(&exss->bits);
     if (exss->static_fields_present) {
+        int active_exss_mask[8];
+
         // Reference clock code
         bits_skip(&exss->bits, 2);
 
@@ -418,7 +429,6 @@ int exss_parse(struct exss_parser *exss, uint8_t *data, int size)
         exss->nassets = bits_get(&exss->bits, 3) + 1;
 
         // Active extension substream mask for audio presentation
-        int active_exss_mask[8];
         for (i = 0; i < exss->npresents; i++)
             active_exss_mask[i] = bits_get(&exss->bits, exss->exss_index + 1);
 
@@ -431,11 +441,13 @@ int exss_parse(struct exss_parser *exss, uint8_t *data, int size)
         // Mixing metadata enable flag
         exss->mix_metadata_enabled = bits_get1(&exss->bits);
         if (exss->mix_metadata_enabled) {
+            int spkr_mask_nbits;
+
             // Mixing metadata adjustment level
             bits_skip(&exss->bits, 2);
 
             // Number of bits for mixer output speaker activity mask
-            int spkr_mask_nbits = (bits_get(&exss->bits, 2) + 1) << 2;
+            spkr_mask_nbits = (bits_get(&exss->bits, 2) + 1) << 2;
 
             // Number of mixing configurations
             exss->nmixoutconfigs = bits_get(&exss->bits, 2) + 1;
@@ -461,7 +473,7 @@ int exss_parse(struct exss_parser *exss, uint8_t *data, int size)
         return -DCADEC_ENOMEM;
 
     // Size of encoded asset data in bytes
-    int offset = header_size;
+    offset = header_size;
     for (i = 0; i < exss->nassets; i++) {
         exss->assets[i].asset_offset = offset;
         exss->assets[i].asset_size = bits_get(&exss->bits, exss->exss_size_nbits) + 1;
@@ -496,11 +508,12 @@ int exss_parse(struct exss_parser *exss, uint8_t *data, int size)
 
 struct dcadec_exss_info *exss_get_info(struct exss_parser *exss)
 {
+	struct exss_asset *asset;
     struct dcadec_exss_info *info = ta_znew(NULL, struct dcadec_exss_info);
     if (!info)
         return NULL;
 
-    struct exss_asset *asset = &exss->assets[0];
+    asset = &exss->assets[0];
 
     info->nchannels = asset->nchannels_total;
     info->sample_rate = asset->max_sample_rate;

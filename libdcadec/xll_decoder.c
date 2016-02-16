@@ -30,7 +30,9 @@
 static int parse_dmix_coeffs(struct xll_chset *chs)
 {
     struct xll_decoder *xll = chs->decoder;
-    int m, n;
+    int m, n, i, j;
+	bool valid;
+	int *coeff_ptr;
 
     if (chs->primary_chset) {
         m = dmix_primary_nch[chs->dmix_type];
@@ -45,7 +47,7 @@ static int parse_dmix_coeffs(struct xll_chset *chs)
         return -DCADEC_ENOMEM;
 
     // Setup buffer pointers for current and previous frame
-    bool valid = (chs->dmix_coeffs_signature == XLL_DMIX_SIGNATURE(chs));
+    valid = (chs->dmix_coeffs_signature == XLL_DMIX_SIGNATURE(chs));
     chs->dmix_coeff_cur = chs->dmix_coeff + m * n * chs->dmix_coeffs_parity;
     chs->dmix_coeff_pre = chs->dmix_coeff + m * n * (chs->dmix_coeffs_parity ^ valid);
 
@@ -59,8 +61,8 @@ static int parse_dmix_coeffs(struct xll_chset *chs)
         chs->dmix_scale_inv_pre = chs->dmix_coeff_pre + m * (chs->nchannels + 1);
     }
 
-    int *coeff_ptr = chs->dmix_coeff_cur;
-    for (int i = 0; i < m; i++) {
+    coeff_ptr = chs->dmix_coeff_cur;
+    for (i = 0; i < m; i++) {
         int scale_inv = 0;
 
         // Downmix scale
@@ -69,27 +71,29 @@ static int parse_dmix_coeffs(struct xll_chset *chs)
             int code = bits_get(&xll->bits, 9);
             int sign = (code >> 8) - 1;
             unsigned int index = (code & 0xff) - 1;
+			int scale;
             if (index < 40 || index >= dca_countof(dmix_table)) {
                 xll_err("Invalid XLL downmix scale index");
                 return -DCADEC_EBADDATA;
             }
-            int scale = dmix_table[index];
+            scale = dmix_table[index];
             scale_inv = dmix_table_inv[index - 40];
             chs->dmix_scale_cur[i] = (scale ^ sign) - sign;
             chs->dmix_scale_inv_cur[i] = (scale_inv ^ sign) - sign;
         }
 
         // Downmix coefficients
-        for (int j = 0; j < chs->nchannels; j++) {
+        for (j = 0; j < chs->nchannels; j++) {
             int code = bits_get(&xll->bits, 9);
             int sign = (code >> 8) - 1;
             if (code &= 0xff) {
                 unsigned int index = code - 1;
+				int coeff;
                 if (index >= dca_countof(dmix_table)) {
                     xll_err("Invalid XLL downmix coefficient index");
                     return -DCADEC_EBADDATA;
                 }
-                int coeff = dmix_table[index];
+                coeff = dmix_table[index];
                 if (!chs->primary_chset)
                     // Multiply by |InvDmixScale| to get |UndoDmixScale|
                     coeff = mul16(scale_inv, coeff);
@@ -107,7 +111,7 @@ static int parse_dmix_coeffs(struct xll_chset *chs)
 static int chs_parse_header(struct xll_chset *chs, struct exss_asset *asset)
 {
     struct xll_decoder *xll = chs->decoder;
-    int i, j, k, ret, header_pos = xll->bits.index;
+    int i, j, k, ret, header_pos = xll->bits.index, band_i;
 
     // Size of channel set sub-header
     int header_size = bits_get(&xll->bits, 10) + 1;
@@ -209,14 +213,17 @@ static int chs_parse_header(struct xll_chset *chs, struct exss_asset *asset)
 
         // Mapping coeffs present flag
         if (bits_get1(&xll->bits)) {
+			int nchspkrcoefbits;
+			int nspkrconfigs;
+
             xll_warn_once("Stream with speaker mapping coefficients");
 
             // Number of bits used to pack each
             // channel-to-speaker mapping coefficient
-            int nchspkrcoefbits = 6 + 2 * bits_get(&xll->bits, 3);
+            nchspkrcoefbits = 6 + 2 * bits_get(&xll->bits, 3);
 
             // Number of loudspeaker configurations
-            int nspkrconfigs = bits_get(&xll->bits, 2) + 1;
+            nspkrconfigs = bits_get(&xll->bits, 2) + 1;
 
             for (i = 0; i < nspkrconfigs; i++) {
                 // Active channel mask for current configuration
@@ -276,7 +283,7 @@ static int chs_parse_header(struct xll_chset *chs, struct exss_asset *asset)
     if ((xll->nchsets > 1 || chs->nfreqbands > 1) && chs->nabits < 5)
         chs->nabits++;
 
-    for (int band_i = 0; band_i < chs->nfreqbands; band_i++) {
+    for (band_i = 0; band_i < chs->nfreqbands; band_i++) {
         struct xll_band *band = &chs->bands[band_i];
 
         // Pairwise channel decorrelation
@@ -392,6 +399,7 @@ static int chs_parse_header(struct xll_chset *chs, struct exss_asset *asset)
 static int chs_alloc_msb_band_data(struct xll_chset *chs)
 {
     struct xll_decoder *xll = chs->decoder;
+	int *ptr, band, i;
 
     // Reallocate MSB sample buffer
     if (ta_zalloc_fast(xll->chset, &chs->sample_buffer1,
@@ -399,9 +407,9 @@ static int chs_alloc_msb_band_data(struct xll_chset *chs)
                        chs->nchannels * chs->nfreqbands, sizeof(int)) < 0)
         return -DCADEC_ENOMEM;
 
-    int *ptr = chs->sample_buffer1 + XLL_DECI_HISTORY;
-    for (int band = 0; band < chs->nfreqbands; band++) {
-        for (int i = 0; i < chs->nchannels; i++) {
+    ptr = chs->sample_buffer1 + XLL_DECI_HISTORY;
+    for (band = 0; band < chs->nfreqbands; band++) {
+        for (i = 0; i < chs->nchannels; i++) {
             chs->bands[band].msb_sample_buffer[i] = ptr;
             ptr += xll->nframesamples + XLL_DECI_HISTORY;
         }
@@ -413,10 +421,11 @@ static int chs_alloc_msb_band_data(struct xll_chset *chs)
 static int chs_alloc_lsb_band_data(struct xll_chset *chs)
 {
     struct xll_decoder *xll = chs->decoder;
+	int band, *ptr, i;
 
     // Number of frequency bands that have MSB/LSB split
     int nfreqbands = 0;
-    for (int band = 0; band < chs->nfreqbands; band++)
+    for (band = 0; band < chs->nfreqbands; band++)
         if (chs->bands[band].lsb_section_size)
             nfreqbands++;
     if (!nfreqbands)
@@ -428,15 +437,15 @@ static int chs_alloc_lsb_band_data(struct xll_chset *chs)
                        sizeof(int)) < 0)
         return -DCADEC_ENOMEM;
 
-    int *ptr = chs->sample_buffer2;
-    for (int band = 0; band < chs->nfreqbands; band++) {
+    ptr = chs->sample_buffer2;
+    for (band = 0; band < chs->nfreqbands; band++) {
         if (chs->bands[band].lsb_section_size) {
-            for (int i = 0; i < chs->nchannels; i++) {
+            for (i = 0; i < chs->nchannels; i++) {
                 chs->bands[band].lsb_sample_buffer[i] = ptr;
                 ptr += xll->nframesamples;
             }
         } else {
-            for (int i = 0; i < chs->nchannels; i++)
+            for (i = 0; i < chs->nchannels; i++)
                 chs->bands[band].lsb_sample_buffer[i] = NULL;
         }
     }
@@ -453,13 +462,15 @@ static int chs_parse_band_data(struct xll_chset *chs, int band_i, int seg, int b
     // Start unpacking MSB portion of the segment
     // Unpack flag whether to reuse parameters from previous segment
     if (!(seg && bits_get1(&xll->bits))) {
+        int nparamsets;
+
         // Unpack segment type
         // 0 - distinct coding parameters for each channel
         // 1 - common coding parameters for all channels
         chs->seg_common = bits_get1(&xll->bits);
 
         // Determine number of coding parameters encoded in segment
-        int nparamsets = chs->seg_common ? 1 : chs->nchannels;
+        nparamsets = chs->seg_common ? 1 : chs->nchannels;
 
         // Unpack Rice coding parameters
         for (i = 0; i < nparamsets; i++) {
@@ -613,8 +624,9 @@ static void chs_clear_band_data(struct xll_chset *chs, int band_i, int seg)
 {
     struct xll_decoder *xll = chs->decoder;
     struct xll_band *band = &chs->bands[band_i];
+	int i;
 
-    for (int i = 0; i < chs->nchannels; i++)
+    for (i = 0; i < chs->nchannels; i++)
         memset(band->msb_sample_buffer[i] +
                seg * xll->nsegsamples, 0, xll->nsegsamples * sizeof(int));
 
@@ -622,7 +634,7 @@ static void chs_clear_band_data(struct xll_chset *chs, int band_i, int seg)
         memset(chs->deci_history, 0, sizeof(chs->deci_history));
 
     if (band->lsb_section_size)
-        for (int i = 0; i < chs->nchannels; i++)
+        for (i = 0; i < chs->nchannels; i++)
             memset(band->lsb_sample_buffer[i] +
                    seg * xll->nsegsamples, 0, xll->nsegsamples * sizeof(int));
 }
@@ -631,15 +643,16 @@ void xll_clear_band_data(struct xll_chset *chs, int band_i)
 {
     struct xll_decoder *xll = chs->decoder;
     struct xll_band *band = &chs->bands[band_i];
+	int i;
 
-    for (int i = 0; i < chs->nchannels; i++)
+    for (i = 0; i < chs->nchannels; i++)
         memset(band->msb_sample_buffer[i], 0, xll->nframesamples * sizeof(int));
 
     if (band_i == XLL_BAND_1)
         memset(chs->deci_history, 0, sizeof(chs->deci_history));
 
     if (band->lsb_section_size)
-        for (int i = 0; i < chs->nchannels; i++)
+        for (i = 0; i < chs->nchannels; i++)
             memset(band->lsb_sample_buffer[i], 0, xll->nframesamples * sizeof(int));
 
     memset(band->nscalablelsbs, 0, sizeof(band->nscalablelsbs));
@@ -688,7 +701,9 @@ void xll_filter_band_data(struct xll_chset *chs, int band_i)
 
     // Inverse pairwise channel decorrellation
     if (band->decor_enabled) {
-        for (i = 0; i < chs->nchannels / 2; i++) {
+        int *tmp[XLL_MAX_CHANNELS];
+
+		for (i = 0; i < chs->nchannels / 2; i++) {
             int coeff = band->decor_coeff[i];
             if (coeff) {
                 int *src = band->msb_sample_buffer[i * 2 + 0];
@@ -699,7 +714,6 @@ void xll_filter_band_data(struct xll_chset *chs, int band_i)
         }
 
         // Reorder channel pointers to the original order
-        int *tmp[XLL_MAX_CHANNELS];
         for (i = 0; i < chs->nchannels; i++)
             tmp[i] = band->msb_sample_buffer[i];
         for (i = 0; i < chs->nchannels; i++)
@@ -733,18 +747,19 @@ void xll_assemble_msbs_lsbs(struct xll_chset *chs, int band_i)
     struct xll_decoder *xll = chs->decoder;
     struct xll_band *band = &chs->bands[band_i];
     int nsamples = xll->nframesamples;
+    int ch, n;
 
-    for (int ch = 0; ch < chs->nchannels; ch++) {
+    for (ch = 0; ch < chs->nchannels; ch++) {
         int shift = xll_get_lsb_width(chs, band_i, ch);
         if (shift) {
             int *msb = band->msb_sample_buffer[ch];
             if (band->nscalablelsbs[ch]) {
                 int *lsb = band->lsb_sample_buffer[ch];
                 int adj = band->bit_width_adjust[ch];
-                for (int n = 0; n < nsamples; n++)
+                for (n = 0; n < nsamples; n++)
                     msb[n] = msb[n] * (1 << shift) + (lsb[n] << adj);
             } else {
-                for (int n = 0; n < nsamples; n++)
+                for (n = 0; n < nsamples; n++)
                     msb[n] = msb[n] * (1 << shift);
             }
         }
@@ -753,19 +768,22 @@ void xll_assemble_msbs_lsbs(struct xll_chset *chs, int band_i)
 
 static void filter0(int *dst, const int *src, int nsamples)
 {
-    for (int n = 0; n < nsamples; n++)
+    int n;
+    for (n = 0; n < nsamples; n++)
         dst[n] -= src[n];
 }
 
 static void filter1(int *dst, const int *src, int nsamples, int32_t coeff)
 {
-    for (int n = 0; n < nsamples; n++)
+    int n;
+    for (n = 0; n < nsamples; n++)
         dst[n] -= mul22(src[n], coeff);
 }
 
 static void filter2(int *dst, const int *src, int nsamples, int32_t coeff)
 {
-    for (int n = 0; n < nsamples; n++)
+    int n;
+    for (n = 0; n < nsamples; n++)
         dst[n] -= mul23(src[n], coeff);
 }
 
@@ -773,6 +791,7 @@ static int chs_assemble_freq_bands(struct xll_chset *chs)
 {
     struct xll_decoder *xll = chs->decoder;
     int nsamples = xll->nframesamples;
+    int *ptr, ch;
 
     assert(chs->nfreqbands > 1);
 
@@ -782,16 +801,18 @@ static int chs_assemble_freq_bands(struct xll_chset *chs)
         return -DCADEC_ENOMEM;
 
     // Assemble frequency bands 0 and 1
-    int *ptr = chs->sample_buffer3;
-    for (int ch = 0; ch < chs->nchannels; ch++) {
+    ptr = chs->sample_buffer3;
+    for (ch = 0; ch < chs->nchannels; ch++) {
+        int *band0, *band1, i;
+
         // Remap output channel pointer to assembly buffer
         chs->out_sample_buffer[ch] = ptr;
 
-        int *band0 = chs->bands[XLL_BAND_0].msb_sample_buffer[ch];
-        int *band1 = chs->bands[XLL_BAND_1].msb_sample_buffer[ch];
+        band0 = chs->bands[XLL_BAND_0].msb_sample_buffer[ch];
+        band1 = chs->bands[XLL_BAND_1].msb_sample_buffer[ch];
 
         // Copy decimator history
-        for (int i = 1; i < XLL_DECI_HISTORY; i++)
+        for (i = 1; i < XLL_DECI_HISTORY; i++)
             band0[i - XLL_DECI_HISTORY] = chs->deci_history[ch][i];
 
         // Filter
@@ -800,7 +821,7 @@ static int chs_assemble_freq_bands(struct xll_chset *chs)
         filter1(band0, band1, nsamples, band_coeff_table0[2]);
         filter0(band1, band0, nsamples);
 
-        for (int i = 0; i < XLL_DECI_HISTORY; i++) {
+        for (i = 0; i < XLL_DECI_HISTORY; i++) {
             filter2(band0, band1, nsamples, band_coeff_table1[i]);
             filter2(band1, band0, nsamples, band_coeff_table2[i]);
             filter2(band0, band1, nsamples, band_coeff_table1[i]);
@@ -808,7 +829,7 @@ static int chs_assemble_freq_bands(struct xll_chset *chs)
         }
 
         // Assemble
-        for (int i = 0; i < nsamples; i++) {
+        for (i = 0; i < nsamples; i++) {
             *ptr++ = *band1++;
             *ptr++ = *++band0;
         }
@@ -819,9 +840,9 @@ static int chs_assemble_freq_bands(struct xll_chset *chs)
 
 int xll_assemble_freq_bands(struct xll_decoder *xll)
 {
-    int ret;
+    int ret, i;
 
-    for (int i = 0; i < xll->nactivechsets; i++)
+    for (i = 0; i < xll->nactivechsets; i++)
         if ((ret = chs_assemble_freq_bands(&xll->chset[i])) < 0)
             return ret;
 
@@ -831,9 +852,10 @@ int xll_assemble_freq_bands(struct xll_decoder *xll)
 int xll_map_ch_to_spkr(struct xll_chset *chs, int ch)
 {
     struct xll_decoder *xll = chs->decoder;
+    int spkr, pos;
 
     if (chs->ch_mask_enabled) {
-        for (int spkr = 0, pos = 0; spkr < xll->ch_mask_nbits; spkr++)
+        for (spkr = 0, pos = 0; spkr < xll->ch_mask_nbits; spkr++)
             if (chs->ch_mask & (1U << spkr))
                 if (pos++ == ch)
                     return spkr;
@@ -854,6 +876,7 @@ int xll_map_ch_to_spkr(struct xll_chset *chs, int ch)
 static int parse_common_header(struct xll_decoder *xll)
 {
     int ret;
+    int stream_ver, header_size, frame_size_nbits, nframesegs_log2;
 
     // XLL extension sync word
     if (bits_get(&xll->bits, 32) != SYNC_WORD_XLL) {
@@ -862,14 +885,14 @@ static int parse_common_header(struct xll_decoder *xll)
     }
 
     // Version number
-    int stream_ver = bits_get(&xll->bits, 4) + 1;
+    stream_ver = bits_get(&xll->bits, 4) + 1;
     if (stream_ver > 1) {
         xll_err_once("Unsupported XLL stream version (%d)", stream_ver);
         return -DCADEC_ENOSUP;
     }
 
     // Lossless frame header length
-    int header_size = bits_get(&xll->bits, 8) + 1;
+    header_size = bits_get(&xll->bits, 8) + 1;
 
     // Check CRC
     if ((ret = bits_check_crc(&xll->bits, 32, header_size * 8)) < 0) {
@@ -878,7 +901,7 @@ static int parse_common_header(struct xll_decoder *xll)
     }
 
     // Number of bits used to read frame size
-    int frame_size_nbits = bits_get(&xll->bits, 5) + 1;
+    frame_size_nbits = bits_get(&xll->bits, 5) + 1;
 
     // Number of bytes in a lossless frame
     xll->frame_size = bits_get(&xll->bits, frame_size_nbits);
@@ -894,7 +917,7 @@ static int parse_common_header(struct xll_decoder *xll)
         xll_warn_once("Stream with %d channel sets", xll->nchsets);
 
     // Number of segments per frame
-    int nframesegs_log2 = bits_get(&xll->bits, 4);
+    nframesegs_log2 = bits_get(&xll->bits, 4);
     xll->nframesegs = 1 << nframesegs_log2;
     if (xll->nframesegs > 1024) {
         xll_err("Too many segments per frame");
@@ -995,6 +1018,8 @@ static int parse_navi_table(struct xll_decoder *xll)
 {
     struct xll_chset *chs;
     int i;
+	int navi_pos, *navi_ptr, band, seg;
+    int ret;
 
     int navi_nb = xll->nfreqbands * xll->nframesegs * xll->nchsets;
     if (navi_nb > 1024) {
@@ -1007,10 +1032,10 @@ static int parse_navi_table(struct xll_decoder *xll)
         return -DCADEC_ENOMEM;
 
     // Parse NAVI
-    int navi_pos = xll->bits.index;
-    int *navi_ptr = xll->navi;
-    for (int band = 0; band < xll->nfreqbands; band++) {
-        for (int seg = 0; seg < xll->nframesegs; seg++) {
+    navi_pos = xll->bits.index;
+    navi_ptr = xll->navi;
+    for (band = 0; band < xll->nfreqbands; band++) {
+        for (seg = 0; seg < xll->nframesegs; seg++) {
             for (i = 0, chs = xll->chset; i < xll->nchsets; i++, chs++) {
                 int size = 0;
                 if (chs->nfreqbands > band) {
@@ -1032,7 +1057,6 @@ static int parse_navi_table(struct xll_decoder *xll)
     bits_skip(&xll->bits, 16);
 
     // Check CRC
-    int ret;
     if ((ret = bits_check_crc(&xll->bits, navi_pos, xll->bits.index)) < 0)
         xll_err("Invalid NAVI checksum");
     return ret;
@@ -1042,6 +1066,7 @@ static int parse_band_data(struct xll_decoder *xll)
 {
     struct xll_chset *chs;
     int i, ret;
+    int navi_pos, *navi_ptr, band, seg;
 
     for (i = 0, chs = xll->chset; i < xll->nactivechsets; i++, chs++) {
         if ((ret = chs_alloc_msb_band_data(chs)) < 0)
@@ -1052,10 +1077,10 @@ static int parse_band_data(struct xll_decoder *xll)
 
     xll->nfailedsegs = 0;
 
-    int navi_pos = xll->bits.index;
-    int *navi_ptr = xll->navi;
-    for (int band = 0; band < xll->nfreqbands; band++) {
-        for (int seg = 0; seg < xll->nframesegs; seg++) {
+    navi_pos = xll->bits.index;
+    navi_ptr = xll->navi;
+    for (band = 0; band < xll->nfreqbands; band++) {
+        for (seg = 0; seg < xll->nframesegs; seg++) {
             for (i = 0, chs = xll->chset; i < xll->nchsets; i++, chs++) {
                 if (chs->nfreqbands > band) {
                     navi_pos += *navi_ptr * 8;
@@ -1085,7 +1110,7 @@ static int parse_frame(struct xll_decoder *xll, uint8_t *data, int size, struct 
 {
     int ret;
 
-    bits_init(&xll->bits, data, size, 0);
+    bits_init(&xll->bits, data, size);
     if ((ret = parse_common_header(xll)) < 0)
         return ret;
     if ((ret = parse_sub_headers(xll, asset)) < 0)
@@ -1223,8 +1248,9 @@ fail:
 
 static void clear_chs(struct xll_decoder *xll)
 {
+    int i;
     if (xll->chset) {
-        for (int i = 0; i < xll->nchsets; i++) {
+        for (i = 0; i < xll->nchsets; i++) {
             xll->chset[i].dmix_coeffs_signature = 0;
             xll->chset[i].dmix_coeffs_parity = false;
         }

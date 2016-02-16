@@ -66,19 +66,15 @@ static struct ta_ext_header *get_or_alloc_ext_header(void *ptr)
     if (!h)
         return NULL;
     if (!h->ext) {
-        h->ext = malloc(sizeof(struct ta_ext_header));
+        h->ext = (struct ta_ext_header *) malloc(sizeof(struct ta_ext_header));
         if (!h->ext)
             return NULL;
-        *h->ext = (struct ta_ext_header) {
-            .header = h,
-            .children = {
-                .next = &h->ext->children,
-                .prev = &h->ext->children,
-                // Needed by ta_find_parent():
-                .size = CHILDREN_SENTINEL,
-                .ext = h->ext,
-            },
-        };
+		memset(h->ext, 0, sizeof(struct ta_ext_header));
+		h->ext->header = h;
+		h->ext->children.next = &h->ext->children;
+		h->ext->children.prev = &h->ext->children;
+		h->ext->children.size = CHILDREN_SENTINEL;
+		h->ext->children.ext = h->ext;
     }
     return h->ext;
 }
@@ -94,10 +90,11 @@ static struct ta_ext_header *get_or_alloc_ext_header(void *ptr)
  */
 bool ta_set_parent(void *ptr, void *ta_parent)
 {
+	struct ta_ext_header *parent_eh;
     struct ta_header *ch = get_header(ptr);
     if (!ch)
         return true;
-    struct ta_ext_header *parent_eh = get_or_alloc_ext_header(ta_parent);
+    parent_eh = get_or_alloc_ext_header(ta_parent);
     if (ta_parent && !parent_eh) // do nothing on OOM
         return false;
     // Unlink from previous parent
@@ -124,13 +121,16 @@ bool ta_set_parent(void *ptr, void *ta_parent)
  */
 void *ta_alloc_size(void *ta_parent, size_t size)
 {
+	struct ta_header *h;
+	void *ptr;
     if (size >= MAX_ALLOC)
         return NULL;
-    struct ta_header *h = malloc(sizeof(union aligned_header) + size);
+    h = (struct ta_header *) malloc(sizeof(union aligned_header) + size);
     if (!h)
         return NULL;
-    *h = (struct ta_header) {.size = size};
-    void *ptr = PTR_FROM_HEADER(h);
+	memset(h, 0, sizeof(*h));
+	h->size = size;
+    ptr = PTR_FROM_HEADER(h);
     if (!ta_set_parent(ptr, ta_parent)) {
         ta_free(ptr);
         return NULL;
@@ -143,13 +143,15 @@ void *ta_alloc_size(void *ta_parent, size_t size)
  */
 void *ta_zalloc_size(void *ta_parent, size_t size)
 {
+	struct ta_header *h;
+	void *ptr;
     if (size >= MAX_ALLOC)
         return NULL;
-    struct ta_header *h = calloc(1, sizeof(union aligned_header) + size);
+    h = (struct ta_header *) calloc(1, sizeof(union aligned_header) + size);
     if (!h)
         return NULL;
-    *h = (struct ta_header) {.size = size};
-    void *ptr = PTR_FROM_HEADER(h);
+	h->size = size;
+    ptr = PTR_FROM_HEADER(h);
     if (!ta_set_parent(ptr, ta_parent)) {
         ta_free(ptr);
         return NULL;
@@ -171,6 +173,9 @@ void *ta_zalloc_size(void *ta_parent, size_t size)
  */
 void *ta_realloc_size(void *ta_parent, void *ptr, size_t size)
 {
+	struct ta_header *h;
+	struct ta_header *old_h;
+
     if (size >= MAX_ALLOC)
         return NULL;
     if (!size) {
@@ -179,11 +184,11 @@ void *ta_realloc_size(void *ta_parent, void *ptr, size_t size)
     }
     if (!ptr)
         return ta_alloc_size(ta_parent, size);
-    struct ta_header *h = get_header(ptr);
-    struct ta_header *old_h = h;
+    h = get_header(ptr);
+    old_h = h;
     if (h->size == size)
         return ptr;
-    h = realloc(h, sizeof(union aligned_header) + size);
+    h = (struct ta_header *) realloc(h, sizeof(union aligned_header) + size);
     if (!h)
         return NULL;
     h->size = size;
@@ -273,9 +278,10 @@ bool ta_set_destructor(void *ptr, void (*destructor)(void *))
 void *ta_find_parent(void *ptr)
 {
     struct ta_header *h = get_header(ptr);
+	struct ta_header *cur;
     if (!h || !h->next)
         return NULL;
-    for (struct ta_header *cur = h->next; cur != h; cur = cur->next) {
+    for (cur = h->next; cur != h; cur = cur->next) {
         if (cur->size == CHILDREN_SENTINEL)
             return PTR_FROM_HEADER(cur->ext->header);
     }

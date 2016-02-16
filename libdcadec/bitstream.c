@@ -21,13 +21,16 @@
 
 static inline uint32_t bits_peek(struct bitstream *bits)
 {
+	int pos, shift;
+	uint32_t v;
+
     if (bits->index >= bits->total)
         return 0;
 
-    int pos = bits->index >> 5;
-    int shift = bits->index & 31;
+    pos = bits->index >> 5;
+    shift = bits->index & 31;
 
-    uint32_t v = DCA_32BE(bits->data[pos]);
+    v = DCA_32BE(bits->data[pos]);
     if (shift) {
         v <<= shift;
         v |= DCA_32BE(bits->data[pos + 1]) >> (32 - shift);
@@ -38,10 +41,12 @@ static inline uint32_t bits_peek(struct bitstream *bits)
 
 bool bits_get1(struct bitstream *bits)
 {
+	uint32_t v;
+
     if (bits->index >= bits->total)
         return false;
 
-    uint32_t v = DCA_32BE(bits->data[bits->index >> 5]);
+    v = DCA_32BE(bits->data[bits->index >> 5]);
     v <<= bits->index & 31;
     v >>= 32 - 1;
 
@@ -69,10 +74,12 @@ int bits_get_signed(struct bitstream *bits, int n)
 
 int bits_get_signed_linear(struct bitstream *bits, int n)
 {
+	unsigned int v;
+
     if (n == 0)
         return 0;
 
-    unsigned int v = bits_get(bits, n);
+    v = bits_get(bits, n);
     return (v >> 1) ^ -(v & 1);
 }
 
@@ -103,9 +110,10 @@ int bits_get_signed_rice(struct bitstream *bits, int k)
 
 int bits_get_unsigned_vlc(struct bitstream *bits, const struct huffman *h)
 {
+	int i;
     uint32_t v = bits_peek(bits);
 
-    for (int i = 0; i < h->size; i++) {
+    for (i = 0; i < h->size; i++) {
         if (v >> (32 - h->len[i]) == h->code[i]) {
             bits->index += h->len[i];
             return i;
@@ -128,8 +136,9 @@ static uint16_t crc16(const uint8_t *data, int size)
         0x8108, 0x9129, 0xa14a, 0xb16b, 0xc18c, 0xd1ad, 0xe1ce, 0xf1ef
     };
 
+	int i;
     uint16_t res = 0xffff;
-    for (int i = 0; i < size; i++) {
+    for (i = 0; i < size; i++) {
         res = (res << 4) ^ crctab[(data[i] >> 4) ^ (res >> 12)];
         res = (res << 4) ^ crctab[(data[i] & 15) ^ (res >> 12)];
     }
@@ -148,33 +157,38 @@ int bits_check_crc(struct bitstream *bits, int p1, int p2)
 
 void bits_get_array(struct bitstream *bits, int *array, int size, int n)
 {
-    for (int i = 0; i < size; i++)
+	int i;
+    for (i = 0; i < size; i++)
         array[i] = bits_get(bits, n);
 }
 
 void bits_get_signed_array(struct bitstream *bits, int *array, int size, int n)
 {
-    for (int i = 0; i < size; i++)
+	int i;
+    for (i = 0; i < size; i++)
         array[i] = bits_get_signed(bits, n);
 }
 
 void bits_get_signed_linear_array(struct bitstream *bits, int *array, int size, int n)
 {
+	int i;
     if (n == 0)
         memset(array, 0, sizeof(*array) * size);
-    else for (int i = 0; i < size; i++)
+    else for (i = 0; i < size; i++)
         array[i] = bits_get_signed_linear(bits, n);
 }
 
 void bits_get_signed_rice_array(struct bitstream *bits, int *array, int size, int k)
 {
-    for (int i = 0; i < size; i++)
+	int i;
+    for (i = 0; i < size; i++)
         array[i] = bits_get_signed_rice(bits, k);
 }
 
 int bits_get_signed_vlc_array(struct bitstream *bits, int *array, int size, const struct huffman *h)
 {
-    for (int i = 0; i < size; i++)
+	int i;
+    for (i = 0; i < size; i++)
         if ((array[i] = bits_get_signed_vlc(bits, h)) == BITS_INVALID_VLC_SI)
             return -DCADEC_EBADDATA;
     return 0;

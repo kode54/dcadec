@@ -94,7 +94,7 @@ static int parse_hd_hdr(struct dcadec_stream *stream)
                 return -1;
             if (stream->cb->read(stream->fp, data, sizeof(data)) != sizeof(data))
                 return -1;
-            if (stream->cb->read(stream->fp, size - sizeof(data), SEEK_CUR) < 0)
+            if (stream->cb->seek(stream->fp, size - sizeof(data), SEEK_CUR) < 0)
                 return -1;
 
             stream->aupr_present = true;
@@ -175,7 +175,7 @@ static int parse_wav_hdr(struct dcadec_stream *stream)
     return -1;
 
 rewind:
-    return fseeko(stream->fp, 0, SEEK_SET);
+    return stream->cb->seek(stream->fp, 0, SEEK_SET);
 }
 
 DCADEC_API struct dcadec_stream *dcadec_stream_open(const struct dcadec_stream_callbacks * cb, void * opaque, int flags)
